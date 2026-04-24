@@ -13,7 +13,9 @@ export default async function AppLayout({
     data: { user },
   } = await supabase.auth.getUser()
 
-  if (!user) redirect('/login')
+  if (!user) {
+    redirect('/login')
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
