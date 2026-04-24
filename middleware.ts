@@ -13,9 +13,15 @@ export async function middleware(request: NextRequest) {
           return request.cookies.getAll()
         },
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) =>
+          cookiesToSet.forEach(({ name, value }) => {
+            request.cookies.set(name, value)
+          })
+
+          response = NextResponse.next({ request })
+
+          cookiesToSet.forEach(({ name, value, options }) => {
             response.cookies.set(name, value, options)
-          )
+          })
         },
       },
     }
@@ -27,25 +33,13 @@ export async function middleware(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname
 
-  // 🔑 Alleen deze routes zijn beschermd
-  const protectedRoutes = [
-    '/dashboard',
-    '/investments',
-    '/transactions',
-  ]
+  const isProtected =
+    pathname.startsWith('/dashboard') ||
+    pathname.startsWith('/investments') ||
+    pathname.startsWith('/transactions')
 
-  const isProtected = protectedRoutes.some((route) =>
-    pathname.startsWith(route)
-  )
-
-  // 🔑 Als NIET ingelogd en protected → naar login
   if (!user && isProtected) {
     return NextResponse.redirect(new URL('/login', request.url))
-  }
-
-  // 🔑 Als WEL ingelogd en op login/signup → naar dashboard
-  if (user && (pathname === '/login' || pathname === '/signup')) {
-    return NextResponse.redirect(new URL('/dashboard', request.url))
   }
 
   return response
