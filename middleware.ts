@@ -27,15 +27,25 @@ export async function middleware(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname
 
-  const protectedRoutes =
-    pathname.startsWith('/dashboard') ||
-    pathname.startsWith('/investments') ||
-    pathname.startsWith('/transactions')
+  // 🔑 Alleen deze routes zijn beschermd
+  const protectedRoutes = [
+    '/dashboard',
+    '/investments',
+    '/transactions',
+  ]
 
-  if (!user && protectedRoutes) {
-    const url = request.nextUrl.clone()
-    url.pathname = '/login'
-    return NextResponse.redirect(url)
+  const isProtected = protectedRoutes.some((route) =>
+    pathname.startsWith(route)
+  )
+
+  // 🔑 Als NIET ingelogd en protected → naar login
+  if (!user && isProtected) {
+    return NextResponse.redirect(new URL('/login', request.url))
+  }
+
+  // 🔑 Als WEL ingelogd en op login/signup → naar dashboard
+  if (user && (pathname === '/login' || pathname === '/signup')) {
+    return NextResponse.redirect(new URL('/dashboard', request.url))
   }
 
   return response
