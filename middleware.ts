@@ -39,7 +39,11 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/transactions')
 
   if (!user && isProtected) {
-    return NextResponse.redirect(new URL('/login', request.url))
+    return NextResponse.redirect(new URL('/login', request.nextUrl.origin))
+  }
+
+  if (user && (pathname === '/login' || pathname === '/signup')) {
+    return NextResponse.redirect(new URL('/dashboard', request.nextUrl.origin))
   }
 
   return response
