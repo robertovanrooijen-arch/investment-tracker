@@ -60,6 +60,7 @@ export default async function DashboardPage() {
       : 'neutral'
 
   const isEmpty = investments.length === 0
+  const hasHistory = metrics.totalEverInvested > 0
 
   return (
     <div className="space-y-6">
@@ -91,16 +92,23 @@ export default async function DashboardPage() {
             <StatCard
               label="Total invested"
               value={money(metrics.totalInvested)}
+              hint="Money currently tied up in open positions"
             />
             <StatCard
               label="Profit / loss"
-              value={metrics.totalInvested > 0 ? money(metrics.totalProfit) : '—'}
+              value={hasHistory ? money(metrics.totalProfit) : '—'}
               hint={
-                metrics.totalInvested > 0 && metrics.totalProfitPct !== null
-                  ? pct(metrics.totalProfitPct)
+                hasHistory
+                  ? `${
+                      metrics.totalProfitPct !== null
+                        ? pct(metrics.totalProfitPct)
+                        : '—'
+                    } · ${money(metrics.totalRealized)} realized · ${money(
+                      metrics.totalUnrealized
+                    )} unrealized`
                   : 'Record a buy or deposit to start tracking gains'
               }
-              tone={metrics.totalInvested > 0 ? profitTone : 'neutral'}
+              tone={hasHistory ? profitTone : 'neutral'}
             />
           </div>
 

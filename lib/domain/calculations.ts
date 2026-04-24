@@ -1,88 +1,141 @@
 import type { Investment, Transaction } from '@/types/database'
 import { hasUnits } from '@/lib/domain/constants'
 
-// How one transaction contributes to "total invested" (net cost basis).
-// - buys + deposits + fees INCREASE what you've put in
-// - sells + withdraws (minus their fees) DECREASE what you've put in
-// - value updates do not change what you've invested — they only affect value
-export function transactionInvestedImpact(tx: Transaction): number {
-  const amount = tx.amount ?? 0
-  const fee = tx.fee ?? 0
-  switch (tx.type) {
-    case 'buy':
-    case 'deposit':
-      return amount + fee
-    case 'sell':
-    case 'withdraw':
-      return -(amount - fee)
-    case 'value update':
-      return 0
-  }
+// ---------- Sorting ----------
+
+function sortChronologically(txs: Transaction[]): Transaction[] {
+  return [...txs].sort((a, b) => {
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1
+    return a.created_at < b.created_at ? -1 : 1
+  })
 }
 
-// Net units held (stock/ETF/crypto only).
-export function netQuantity(
-  investment: Investment,
-  transactions: Transaction[]
-): number {
-  if (!hasUnits(investment.type)) return 0
-  let qty = 0
-  for (const tx of transactions) {
-    if (tx.investment_id !== investment.id) continue
-    if (tx.type === 'buy' && tx.quantity !== null) qty += tx.quantity
-    else if (tx.type === 'sell' && tx.quantity !== null) qty -= tx.quantity
-  }
-  return qty
-}
+// ---------- Per-investment metrics ----------
 
 export type InvestmentMetrics = {
-  currentValue: number
-  invested: number
-  profit: number
-  profitPct: number | null // null when invested is 0
-  quantity: number | null  // null for non-unit types
+  quantity: number | null           // null for non-unit types
+  currentValue: number              // value of what you currently hold
+  remainingCostBasis: number        // money still tied up in this position
+  realizedProfit: number            // profit locked in from sells / withdraws
+  unrealizedProfit: number          // profit on what you still hold
+  totalProfit: number               // realized + unrealized
+  totalEverInvested: number         // denominator for %, independent of sells
+  totalProfitPct: number | null
+  isClosed: boolean                 // unit type with qty = 0 after having activity
+  hasActivity: boolean              // any transactions at all
 }
 
 export function computeInvestmentMetrics(
   investment: Investment,
   transactions: Transaction[]
 ): InvestmentMetrics {
-  const txForThis = transactions.filter(
-    (t) => t.investment_id === investment.id
+  const txs = sortChronologically(
+    transactions.filter((t) => t.investment_id === investment.id)
   )
-
-  const invested = txForThis.reduce(
-    (sum, t) => sum + transactionInvestedImpact(t),
-    0
-  )
-
-  let currentValue = 0
-  let quantity: number | null = null
+  const hasActivity = txs.length > 0
 
   if (hasUnits(investment.type)) {
-    quantity = netQuantity(investment, txForThis)
-    const price = investment.current_price ?? 0
-    if (quantity > 0 && price > 0) {
-      currentValue = quantity * price
-    } else {
-      // No units yet (or no price): fall back to the manual current_value.
-      currentValue = investment.current_value ?? 0
+    let sharesHeld = 0
+    let costBasisHeld = 0
+    let realizedProfit = 0
+    let totalEverInvested = 0
+
+    for (const tx of txs) {
+      if (
+        tx.type === 'buy' &&
+        tx.quantity !== null &&
+        tx.price_per_unit !== null
+      ) {
+        const cost = tx.quantity * tx.price_per_unit + (tx.fee ?? 0)
+        sharesHeld += tx.quantity
+        costBasisHeld += cost
+        totalEverInvested += cost
+      } else if (
+        tx.type === 'sell' &&
+        tx.quantity !== null &&
+        tx.price_per_unit !== null
+      ) {
+        // Cap against sharesHeld to avoid negative holdings if data got in
+        // somehow (form validation should prevent this going forward).
+        const sellQty = Math.min(tx.quantity, sharesHeld)
+        if (sharesHeld > 0 && sellQty > 0) {
+          const avgCost = costBasisHeld / sharesHeld
+          const soldCost = avgCost * sellQty
+          const proceeds = sellQty * tx.price_per_unit - (tx.fee ?? 0)
+          realizedProfit += proceeds - soldCost
+          costBasisHeld -= soldCost
+          sharesHeld -= sellQty
+        }
+      }
+      // deposit / withdraw / value update are not meaningful for unit assets
     }
-  } else {
-    // Cash / real estate / custom: the stored value is the source of truth.
-    currentValue = investment.current_value ?? 0
+
+    const price = investment.current_price ?? 0
+    const currentValue = sharesHeld > 0 ? sharesHeld * price : 0
+    const unrealizedProfit = sharesHeld > 0 ? currentValue - costBasisHeld : 0
+    const totalProfit = realizedProfit + unrealizedProfit
+    const totalProfitPct =
+      totalEverInvested > 0 ? totalProfit / totalEverInvested : null
+    const isClosed = hasActivity && sharesHeld <= 0
+
+    return {
+      quantity: sharesHeld,
+      currentValue,
+      remainingCostBasis: costBasisHeld,
+      realizedProfit,
+      unrealizedProfit,
+      totalProfit,
+      totalEverInvested,
+      totalProfitPct,
+      isClosed,
+      hasActivity,
+    }
   }
 
-  const profit = currentValue - invested
-  const profitPct = invested !== 0 ? profit / invested : null
+  // Non-unit types: cash / real estate / custom
+  let invested = 0
+  let totalEverInvested = 0
 
-  return { currentValue, invested, profit, profitPct, quantity }
+  for (const tx of txs) {
+    if (tx.type === 'deposit') {
+      const amt = (tx.amount ?? 0) + (tx.fee ?? 0)
+      invested += amt
+      totalEverInvested += amt
+    } else if (tx.type === 'withdraw') {
+      invested -= (tx.amount ?? 0) - (tx.fee ?? 0)
+    }
+    // value update doesn't change invested; it updates investment.current_value elsewhere
+  }
+
+  const currentValue = investment.current_value ?? 0
+  const unrealizedProfit = currentValue - invested
+  const totalProfit = unrealizedProfit
+  const totalProfitPct =
+    totalEverInvested > 0 ? totalProfit / totalEverInvested : null
+
+  return {
+    quantity: null,
+    currentValue,
+    remainingCostBasis: invested,
+    realizedProfit: 0,
+    unrealizedProfit,
+    totalProfit,
+    totalEverInvested,
+    totalProfitPct,
+    isClosed: false,
+    hasActivity,
+  }
 }
+
+// ---------- Portfolio-wide metrics ----------
 
 export type PortfolioMetrics = {
   totalValue: number
-  totalInvested: number
+  totalInvested: number            // sum of remainingCostBasis across investments
+  totalRealized: number
+  totalUnrealized: number
   totalProfit: number
+  totalEverInvested: number
   totalProfitPct: number | null
 }
 
@@ -92,27 +145,42 @@ export function computePortfolioMetrics(
 ): PortfolioMetrics {
   let totalValue = 0
   let totalInvested = 0
+  let totalRealized = 0
+  let totalUnrealized = 0
+  let totalEverInvested = 0
 
   for (const inv of investments) {
     const m = computeInvestmentMetrics(inv, transactions)
     totalValue += m.currentValue
-    totalInvested += m.invested
+    totalInvested += m.remainingCostBasis
+    totalRealized += m.realizedProfit
+    totalUnrealized += m.unrealizedProfit
+    totalEverInvested += m.totalEverInvested
   }
 
-  const totalProfit = totalValue - totalInvested
+  const totalProfit = totalRealized + totalUnrealized
   const totalProfitPct =
-    totalInvested !== 0 ? totalProfit / totalInvested : null
+    totalEverInvested > 0 ? totalProfit / totalEverInvested : null
 
-  return { totalValue, totalInvested, totalProfit, totalProfitPct }
+  return {
+    totalValue,
+    totalInvested,
+    totalRealized,
+    totalUnrealized,
+    totalProfit,
+    totalEverInvested,
+    totalProfitPct,
+  }
 }
+
+// ---------- Allocation ----------
 
 export type AllocationSlice = {
   key: string
   value: number
-  pct: number // 0 — 1
+  pct: number
 }
 
-// Groups investments by a key (category or platform), returns sorted slices.
 export function computeAllocation(
   investments: Investment[],
   transactions: Transaction[],
@@ -136,6 +204,27 @@ export function computeAllocation(
   slices.sort((a, b) => b.value - a.value)
   return slices
 }
+
+// ---------- Form validation helper ----------
+
+// Net units held for an investment across all given transactions,
+// optionally EXCLUDING one transaction (used when editing).
+export function heldQuantity(
+  investmentId: string,
+  transactions: Transaction[],
+  excludeTxId?: string
+): number {
+  let held = 0
+  for (const tx of transactions) {
+    if (tx.investment_id !== investmentId) continue
+    if (excludeTxId && tx.id === excludeTxId) continue
+    if (tx.type === 'buy' && tx.quantity !== null) held += tx.quantity
+    else if (tx.type === 'sell' && tx.quantity !== null) held -= tx.quantity
+  }
+  return held
+}
+
+// ---------- Formatting ----------
 
 export function pct(n: number | null | undefined, digits = 2): string {
   if (n === null || n === undefined || Number.isNaN(n)) return '—'

@@ -1,221 +1,232 @@
 'use client'
 
-import { useState, useMemo, useEffect, type FormEvent } from 'react'
+import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
-import {
-  TX_TYPES,
-  usesUnits,
-  usesAmount,
-  txTypesForInvestmentType,
-} from '@/lib/domain/transaction-helpers'
-import type {
-  Transaction,
-  TransactionType,
-  Investment,
-} from '@/types/database'
 import { Field } from '@/components/ui/field'
 import { Button } from '@/components/ui/button'
+import { money } from '@/lib/format'
 
-const inputClass =
-  'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900'
+const UNIT_TYPES = new Set(['stock', 'etf', 'crypto'])
 
-type InvestmentOption = Pick<Investment, 'id' | 'name' | 'ticker' | 'type'>
+type TxType = 'buy' | 'sell' | 'dividend' | 'deposit' | 'withdraw' | 'interest' | 'fee'
 
-type TransactionFormProps = {
-  investments: InvestmentOption[]
-  initial?: Transaction
-  defaultInvestmentId?: string
+export type InvestmentOption = {
+  id: string
+  name: string
+  type: string
+  quantityHeld: number
+  current_value: number | null
 }
 
-export function TransactionForm({
-  investments,
-  initial,
-  defaultInvestmentId,
-}: TransactionFormProps) {
+export type TransactionInitial = {
+  id: string
+  investment_id: string
+  type: TxType
+  date: string
+  quantity: number | null
+  price_per_unit: number | null
+  amount: number | null
+  fee: number | null
+  notes: string | null
+}
+
+type Props = {
+  investments: InvestmentOption[]
+  initial?: TransactionInitial
+}
+
+const UNIT_TX_TYPES: TxType[] = ['buy', 'sell', 'dividend']
+const AMOUNT_TX_TYPES: TxType[] = ['deposit', 'withdraw', 'interest', 'fee']
+
+const TX_LABELS: Record<TxType, string> = {
+  buy: 'Buy',
+  sell: 'Sell',
+  dividend: 'Dividend',
+  deposit: 'Deposit',
+  withdraw: 'Withdraw',
+  interest: 'Interest',
+  fee: 'Fee',
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+export function TransactionForm({ investments, initial }: Props) {
   const router = useRouter()
   const supabase = createClient()
-  const isEdit = Boolean(initial)
 
-  const [investmentId, setInvestmentId] = useState(
-    initial?.investment_id ?? defaultInvestmentId ?? investments[0]?.id ?? ''
+  const [investmentId, setInvestmentId] = useState<string>(
+    initial?.investment_id ?? investments[0]?.id ?? ''
   )
-  const [type, setType] = useState<TransactionType>(initial?.type ?? 'buy')
-  const [date, setDate] = useState(
-    initial?.date ?? new Date().toISOString().slice(0, 10)
+  const [type, setType] = useState<TxType>(initial?.type ?? 'buy')
+  const [date, setDate] = useState<string>(initial?.date ?? todayISO())
+  const [quantity, setQuantity] = useState<string>(
+    initial?.quantity != null ? String(initial.quantity) : ''
   )
-  const [quantity, setQuantity] = useState(
-    initial?.quantity !== null && initial?.quantity !== undefined
-      ? String(initial.quantity)
-      : ''
+  const [pricePerUnit, setPricePerUnit] = useState<string>(
+    initial?.price_per_unit != null ? String(initial.price_per_unit) : ''
   )
-  const [pricePerUnit, setPricePerUnit] = useState(
-    initial?.price_per_unit !== null && initial?.price_per_unit !== undefined
-      ? String(initial.price_per_unit)
-      : ''
+  const [amount, setAmount] = useState<string>(
+    initial?.amount != null ? String(initial.amount) : ''
   )
-  const [amount, setAmount] = useState(
-    initial?.amount !== null && initial?.amount !== undefined
-      ? String(initial.amount)
-      : ''
+  const [fee, setFee] = useState<string>(
+    initial?.fee != null ? String(initial.fee) : ''
   )
-  const [fee, setFee] = useState(
-    initial?.fee !== null && initial?.fee !== undefined
-      ? String(initial.fee)
-      : '0'
-  )
-  const [notes, setNotes] = useState(initial?.notes ?? '')
+  const [notes, setNotes] = useState<string>(initial?.notes ?? '')
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Which transaction types are valid for the currently-selected investment.
-  const selectedInvestment = investments.find((i) => i.id === investmentId)
-  const allowedTypes: TransactionType[] = selectedInvestment
-    ? txTypesForInvestmentType(selectedInvestment.type)
-    : TX_TYPES
+  const selectedInvestment = useMemo(
+    () => investments.find((i) => i.id === investmentId) ?? null,
+    [investments, investmentId]
+  )
 
-  // If the currently-selected type isn't valid for this investment, switch it.
+  const isUnit = !!selectedInvestment && UNIT_TYPES.has(selectedInvestment.type)
+  const allowedTypes: TxType[] = isUnit ? UNIT_TX_TYPES : AMOUNT_TX_TYPES
+
+  // If the investment changes and the current tx type is no longer valid, switch it.
   useEffect(() => {
-    if (selectedInvestment && !allowedTypes.includes(type)) {
+    if (!selectedInvestment) return
+    if (!allowedTypes.includes(type)) {
       setType(allowedTypes[0])
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [investmentId])
 
-  const showUnits = usesUnits(type)
-  const showAmount = usesAmount(type)
+  const isSell = type === 'sell'
+  const availableToSell = selectedInvestment?.quantityHeld ?? 0
 
-  // Live preview of qty × price for buy/sell.
+  const showUnits = isUnit && (type === 'buy' || type === 'sell')
+  const showAmount = !showUnits
+
   const computedAmount = useMemo(() => {
     if (!showUnits) return null
-    if (quantity === '' || pricePerUnit === '') return null
-    const q = Number(quantity)
-    const p = Number(pricePerUnit)
-    if (!Number.isFinite(q) || !Number.isFinite(p)) return null
-    return q * p
-  }, [showUnits, quantity, pricePerUnit])
+    const q = parseFloat(quantity)
+    const p = parseFloat(pricePerUnit)
+    if (Number.isFinite(q) && Number.isFinite(p)) {
+      const f = parseFloat(fee)
+      const feeNum = Number.isFinite(f) ? f : 0
+      const gross = q * p
+      return type === 'buy' ? gross + feeNum : gross - feeNum
+    }
+    return null
+  }, [showUnits, quantity, pricePerUnit, fee, type])
 
-  async function onSubmit(e: FormEvent<HTMLFormElement>) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
 
     if (!investmentId) {
-      setError('Please pick an investment.')
+      setError('Please select an investment.')
       return
     }
     if (!date) {
-      setError('Please pick a date.')
+      setError('Please choose a date.')
       return
     }
 
-    setSaving(true)
+    const feeNum = parseFloat(fee)
+    const feeVal = Number.isFinite(feeNum) ? feeNum : 0
 
-    const {
-      data: { user },
-      error: userErr,
-    } = await supabase.auth.getUser()
-    if (userErr || !user) {
-      setError('You are not signed in.')
-      setSaving(false)
-      return
-    }
-
-    // Build the fields depending on type.
     let finalQuantity: number | null = null
     let finalPrice: number | null = null
     let finalAmount: number | null = null
 
     if (showUnits) {
-      if (quantity === '' || pricePerUnit === '') {
-        setError('Please enter both quantity and price per unit.')
-        setSaving(false)
+      finalQuantity = parseFloat(quantity)
+      finalPrice = parseFloat(pricePerUnit)
+
+      if (!Number.isFinite(finalQuantity) || finalQuantity <= 0) {
+        setError('Quantity must be greater than 0.')
         return
       }
-      finalQuantity = Number(quantity)
-      finalPrice = Number(pricePerUnit)
-      finalAmount = finalQuantity * finalPrice
+      if (!Number.isFinite(finalPrice) || finalPrice < 0) {
+        setError('Price per unit must be 0 or higher.')
+        return
+      }
+
+      if (isSell && finalQuantity > availableToSell + 1e-9) {
+        setError(
+          `You only hold ${availableToSell} ${
+            availableToSell === 1 ? 'unit' : 'units'
+          } — you can't sell ${finalQuantity}.`
+        )
+        return
+      }
+
+      const gross = finalQuantity * finalPrice
+      finalAmount = type === 'buy' ? gross + feeVal : gross - feeVal
     } else {
-      if (amount === '') {
-        setError('Please enter an amount.')
-        setSaving(false)
-        return
-      }
-      finalAmount = Number(amount)
-    }
-
-    const feeNum = fee !== '' ? Number(fee) : 0
-
-    const payload = {
-      investment_id: investmentId,
-      type,
-      date,
-      quantity: finalQuantity,
-      price_per_unit: finalPrice,
-      amount: finalAmount,
-      fee: feeNum,
-      notes: notes.trim() ? notes.trim() : null,
-    }
-
-    if (isEdit && initial) {
-      const { error: upErr } = await supabase
-        .from('transactions')
-        .update(payload)
-        .eq('id', initial.id)
-      if (upErr) {
-        setError(upErr.message)
-        setSaving(false)
-        return
-      }
-    } else {
-      const { error: insErr } = await supabase
-        .from('transactions')
-        .insert({ ...payload, user_id: user.id })
-      if (insErr) {
-        setError(insErr.message)
-        setSaving(false)
+      finalAmount = parseFloat(amount)
+      if (!Number.isFinite(finalAmount) || finalAmount < 0) {
+        setError('Amount must be 0 or higher.')
         return
       }
     }
 
-    // Value updates also roll into the investment's current_value so the
-    // dashboard and list reflect the new number immediately.
-    if (type === 'value update' && finalAmount !== null) {
-      await supabase
-        .from('investments')
-        .update({ current_value: finalAmount })
-        .eq('id', investmentId)
-    }
+    setSaving(true)
+    try {
+      const payload = {
+        investment_id: investmentId,
+        type,
+        date,
+        quantity: finalQuantity,
+        price_per_unit: finalPrice,
+        amount: finalAmount,
+        fee: feeVal || null,
+        notes: notes.trim() || null,
+      }
 
-    router.push('/transactions')
-    router.refresh()
+      const { error: dbError } = initial
+        ? await supabase.from('transactions').update(payload).eq('id', initial.id)
+        : await supabase.from('transactions').insert(payload)
+
+      if (dbError) {
+        setError(dbError.message)
+        setSaving(false)
+        return
+      }
+
+      // Keep the investment's current_value in sync when a buy/sell price is recorded.
+      if (showUnits && finalPrice != null && finalPrice > 0) {
+        await supabase
+          .from('investments')
+          .update({ current_value: finalPrice })
+          .eq('id', investmentId)
+      }
+
+      router.push('/transactions')
+      router.refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong.')
+      setSaving(false)
+    }
   }
 
-  // If the user has no investments yet, show a friendly nudge.
   if (investments.length === 0) {
     return (
-      <div className="bg-white rounded-2xl border border-slate-200 p-8 max-w-2xl">
-        <p className="text-slate-900 font-medium">No investments yet</p>
-        <p className="text-sm text-slate-500 mt-1">
-          You need at least one investment before you can add a transaction.
-        </p>
-        <Link
-          href="/investments/new"
-          className="mt-4 inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
-        >
-          + Add your first investment
-        </Link>
+      <div className="rounded-lg border border-slate-200 bg-white p-6 text-sm text-slate-600">
+        You need at least one investment before you can record activity.{' '}
+        <a href="/investments/new" className="font-medium text-slate-900 underline">
+          Create one first
+        </a>
+        .
       </div>
     )
   }
 
+  const inputClass =
+    'w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500'
+
   return (
     <form
       onSubmit={onSubmit}
-      className="bg-white rounded-2xl border border-slate-200 p-6 md:p-8 max-w-2xl"
+      className="space-y-6 rounded-lg border border-slate-200 bg-white p-6"
     >
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+      <div className="grid gap-4 md:grid-cols-2">
         <Field label="Investment" htmlFor="investment" required>
           <select
             id="investment"
@@ -226,7 +237,6 @@ export function TransactionForm({
             {investments.map((inv) => (
               <option key={inv.id} value={inv.id}>
                 {inv.name}
-                {inv.ticker ? ` (${inv.ticker})` : ''}
               </option>
             ))}
           </select>
@@ -237,11 +247,11 @@ export function TransactionForm({
             id="type"
             className={inputClass}
             value={type}
-            onChange={(e) => setType(e.target.value as TransactionType)}
+            onChange={(e) => setType(e.target.value as TxType)}
           >
             {allowedTypes.map((t) => (
               <option key={t} value={t}>
-                {t}
+                {TX_LABELS[t]}
               </option>
             ))}
           </select>
@@ -254,11 +264,10 @@ export function TransactionForm({
             className={inputClass}
             value={date}
             onChange={(e) => setDate(e.target.value)}
-            required
           />
         </Field>
 
-        <Field label="Fee" htmlFor="fee" hint="Optional — defaults to 0">
+        <Field label="Fee" htmlFor="fee">
           <input
             id="fee"
             type="number"
@@ -279,11 +288,17 @@ export function TransactionForm({
                 type="number"
                 step="any"
                 min="0"
+                max={isSell ? availableToSell : undefined}
                 className={inputClass}
                 value={quantity}
                 onChange={(e) => setQuantity(e.target.value)}
                 placeholder="0"
               />
+              {isSell && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Available to sell: {availableToSell}
+                </p>
+              )}
             </Field>
 
             <Field label="Price per unit" htmlFor="price" required>
@@ -302,22 +317,7 @@ export function TransactionForm({
         )}
 
         {showAmount && (
-          <Field
-            label={
-              type === 'deposit'
-                ? 'Deposit amount'
-                : type === 'withdraw'
-                ? 'Withdraw amount'
-                : 'New total value'
-            }
-            htmlFor="amount"
-            required
-            hint={
-              type === 'value update'
-                ? 'Sets this holding to a new total value (e.g. updated house appraisal)'
-                : undefined
-            }
-          >
+          <Field label="Amount" htmlFor="amount" required>
             <input
               id="amount"
               type="number"
@@ -332,43 +332,36 @@ export function TransactionForm({
         )}
 
         <div className="md:col-span-2">
-          <Field label="Notes" htmlFor="notes" hint="Optional">
+          <Field label="Notes" htmlFor="notes">
             <textarea
               id="notes"
-              rows={3}
-              className={inputClass}
-              value={notes ?? ''}
+              className={`${inputClass} min-h-[80px]`}
+              value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Anything you want to remember about this transaction"
+              placeholder="Optional notes"
             />
           </Field>
         </div>
       </div>
 
       {showUnits && computedAmount !== null && (
-        <p className="mt-4 text-sm text-slate-600">
-          Total:{' '}
-          <span className="font-medium text-slate-900">
-            {new Intl.NumberFormat('en-IE', {
-              style: 'currency',
-              currency: 'EUR',
-            }).format(computedAmount)}
-          </span>
+        <p className="text-sm text-slate-600">
+          Total {type === 'buy' ? 'cost' : 'proceeds'}:{' '}
+          <span className="font-medium text-slate-900">{money(computedAmount)}</span>
         </p>
       )}
 
-      {error && <p className="mt-4 text-sm text-rose-600">{error}</p>}
+      {error && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+      )}
 
-      <div className="mt-6 flex items-center gap-3">
+      <div className="flex items-center gap-3">
         <Button type="submit" disabled={saving}>
-          {saving ? 'Saving…' : isEdit ? 'Save changes' : 'Add transaction'}
+          {saving ? 'Saving…' : initial ? 'Save changes' : 'Record activity'}
         </Button>
-        <Link
-          href="/transactions"
-          className="text-sm text-slate-600 hover:text-slate-900"
-        >
+        <Button type="button" variant="secondary" onClick={() => router.back()}>
           Cancel
-        </Link>
+        </Button>
       </div>
     </form>
   )

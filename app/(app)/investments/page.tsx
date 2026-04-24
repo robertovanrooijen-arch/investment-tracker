@@ -2,10 +2,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/page-header'
 import { money, fmtDate } from '@/lib/format'
-import {
-  computeInvestmentMetrics,
-  pct,
-} from '@/lib/domain/calculations'
+import { computeInvestmentMetrics, pct } from '@/lib/domain/calculations'
 import type { Investment, Transaction } from '@/types/database'
 
 export default async function InvestmentsPage() {
@@ -81,11 +78,11 @@ export default async function InvestmentsPage() {
             </thead>
             <tbody>
               {rows.map(({ inv, m }) => {
-                const hasInvested = m.invested > 0
+                const showPL = m.totalEverInvested > 0
                 const plTone =
-                  m.profit > 0
+                  m.totalProfit > 0
                     ? 'text-emerald-600'
-                    : m.profit < 0
+                    : m.totalProfit < 0
                     ? 'text-rose-600'
                     : 'text-slate-900'
                 return (
@@ -95,8 +92,13 @@ export default async function InvestmentsPage() {
                   >
                     <td className="px-6 py-4">
                       <Link href={`/investments/${inv.id}`} className="block">
-                        <div className="font-medium text-slate-900">
+                        <div className="font-medium text-slate-900 flex items-center gap-2">
                           {inv.name}
+                          {m.isClosed && (
+                            <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+                              Closed
+                            </span>
+                          )}
                         </div>
                         {inv.ticker && (
                           <div className="text-xs text-slate-500">
@@ -119,11 +121,13 @@ export default async function InvestmentsPage() {
                     <td
                       className={`px-6 py-4 text-right text-sm tabular-nums ${plTone}`}
                     >
-                      {hasInvested ? (
+                      {showPL ? (
                         <>
-                          <div>{money(m.profit)}</div>
+                          <div>{money(m.totalProfit)}</div>
                           <div className="text-xs">
-                            {m.profitPct !== null ? pct(m.profitPct) : '—'}
+                            {m.totalProfitPct !== null
+                              ? pct(m.totalProfitPct)
+                              : '—'}
                           </div>
                         </>
                       ) : (
@@ -149,11 +153,11 @@ export default async function InvestmentsPage() {
 
           <ul className="md:hidden divide-y divide-slate-100">
             {rows.map(({ inv, m }) => {
-              const hasInvested = m.invested > 0
+              const showPL = m.totalEverInvested > 0
               const plTone =
-                m.profit > 0
+                m.totalProfit > 0
                   ? 'text-emerald-600'
-                  : m.profit < 0
+                  : m.totalProfit < 0
                   ? 'text-rose-600'
                   : 'text-slate-500'
               return (
@@ -163,8 +167,13 @@ export default async function InvestmentsPage() {
                     className="flex items-center justify-between px-5 py-4 hover:bg-slate-50"
                   >
                     <div className="min-w-0">
-                      <div className="font-medium text-slate-900 truncate">
+                      <div className="font-medium text-slate-900 truncate flex items-center gap-2">
                         {inv.name}
+                        {m.isClosed && (
+                          <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+                            Closed
+                          </span>
+                        )}
                       </div>
                       <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
                         <span>{inv.type}</span>
@@ -177,9 +186,9 @@ export default async function InvestmentsPage() {
                         {money(m.currentValue)}
                       </div>
                       <div className={`text-xs tabular-nums ${plTone}`}>
-                        {hasInvested
-                          ? m.profitPct !== null
-                            ? pct(m.profitPct)
+                        {showPL
+                          ? m.totalProfitPct !== null
+                            ? pct(m.totalProfitPct)
                             : '—'
                           : '—'}
                       </div>

@@ -35,13 +35,18 @@ export default async function InvestmentDetailPage({
 
   const investment = invRes.data
   const transactions = txRes.data ?? []
-  const metrics = computeInvestmentMetrics(investment, transactions)
+  const m = computeInvestmentMetrics(investment, transactions)
+
   const profitTone: 'positive' | 'negative' | 'neutral' =
-    metrics.profit > 0
+    m.totalProfit > 0
       ? 'positive'
-      : metrics.profit < 0
+      : m.totalProfit < 0
       ? 'negative'
       : 'neutral'
+
+  const isUnit = hasUnits(investment.type)
+  const hasSold = m.realizedProfit !== 0
+  const statusLabel = m.isClosed ? 'Closed position' : 'Open position'
 
   return (
     <div className="space-y-6">
@@ -63,12 +68,14 @@ export default async function InvestmentDetailPage({
         }
         action={
           <div className="flex items-center gap-2">
-            <Link
-              href={`/transactions/new?investment=${investment.id}`}
-              className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-900 hover:bg-slate-50"
-            >
-              + Add transaction
-            </Link>
+            {!m.isClosed && (
+              <Link
+                href={`/transactions/new?investment=${investment.id}`}
+                className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-900 hover:bg-slate-50"
+              >
+                + Record activity
+              </Link>
+            )}
             <Link
               href={`/investments/${investment.id}/edit`}
               className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
@@ -79,22 +86,99 @@ export default async function InvestmentDetailPage({
         }
       />
 
-<div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <StatCard label="Current value" value={money(metrics.currentValue)} />
-        <StatCard label="Total invested" value={money(metrics.invested)} />
-        <StatCard
-          label="Profit / loss"
-          value={metrics.invested > 0 ? money(metrics.profit) : '—'}
-          hint={
-            metrics.invested > 0 && metrics.profitPct !== null
-              ? pct(metrics.profitPct)
-              : 'Add a transaction to start tracking gains'
-          }
-          tone={metrics.invested > 0 ? profitTone : 'neutral'}
-        />
-      </div>
+      {isUnit && m.hasActivity && (
+        <div
+          className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
+            m.isClosed
+              ? 'bg-slate-100 text-slate-700'
+              : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+          }`}
+        >
+          {statusLabel}
+        </div>
+      )}
 
-      {hasUnits(investment.type) && (
+      {/* Closed unit position: simpler display */}
+      {isUnit && m.isClosed ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <StatCard label="Quantity held" value="0" hint="Fully sold" />
+          <StatCard
+            label="Realized profit / loss"
+            value={money(m.realizedProfit)}
+            hint={
+              m.totalProfitPct !== null
+                ? `${pct(m.totalProfitPct)} on ${money(m.totalEverInvested)} invested`
+                : undefined
+            }
+            tone={profitTone}
+          />
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <StatCard label="Current value" value={money(m.currentValue)} />
+          <StatCard
+            label="Total invested"
+            value={money(m.remainingCostBasis)}
+            hint={isUnit ? 'Cost basis of shares held' : undefined}
+          />
+          <StatCard
+            label="Profit / loss"
+            value={m.hasActivity ? money(m.totalProfit) : '—'}
+            hint={
+              m.hasActivity && m.totalProfitPct !== null
+                ? pct(m.totalProfitPct)
+                : 'Record a buy or deposit to start tracking gains'
+            }
+            tone={m.hasActivity ? profitTone : 'neutral'}
+          />
+        </div>
+      )}
+
+      {/* Realized / unrealized breakdown only when there's been a sell */}
+      {isUnit && hasSold && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
+          <h2 className="text-base font-semibold text-slate-900">
+            Profit breakdown
+          </h2>
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
+                Realized (from sells)
+              </p>
+              <p
+                className={`mt-1 text-lg font-medium tabular-nums ${
+                  m.realizedProfit > 0
+                    ? 'text-emerald-600'
+                    : m.realizedProfit < 0
+                    ? 'text-rose-600'
+                    : 'text-slate-900'
+                }`}
+              >
+                {money(m.realizedProfit)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
+                Unrealized (on remaining)
+              </p>
+              <p
+                className={`mt-1 text-lg font-medium tabular-nums ${
+                  m.unrealizedProfit > 0
+                    ? 'text-emerald-600'
+                    : m.unrealizedProfit < 0
+                    ? 'text-rose-600'
+                    : 'text-slate-900'
+                }`}
+              >
+                {m.isClosed ? '—' : money(m.unrealizedProfit)}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quantity / price row for unit assets that aren't closed */}
+      {isUnit && !m.isClosed && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
             <div>
@@ -102,7 +186,7 @@ export default async function InvestmentDetailPage({
                 Quantity held
               </p>
               <p className="mt-1 text-base text-slate-900 tabular-nums">
-                {metrics.quantity ?? 0}
+                {m.quantity ?? 0}
               </p>
             </div>
             <div>
@@ -141,17 +225,19 @@ export default async function InvestmentDetailPage({
           <h2 className="text-base font-semibold text-slate-900">
             Transaction history
           </h2>
-          <Link
-            href={`/transactions/new?investment=${investment.id}`}
-            className="text-sm text-slate-600 hover:text-slate-900"
-          >
-            + Add transaction
-          </Link>
+          {!m.isClosed && (
+            <Link
+              href={`/transactions/new?investment=${investment.id}`}
+              className="text-sm text-slate-600 hover:text-slate-900"
+            >
+              + Record activity
+            </Link>
+          )}
         </div>
 
         {transactions.length === 0 ? (
           <div className="p-6 text-sm text-slate-500">
-            No transactions yet for this investment.
+            No activity yet for this investment.
           </div>
         ) : (
           <>
