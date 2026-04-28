@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
 import { StatCard } from '@/components/ui/stat-card'
+import { WhatIfBuy } from '@/components/investments/what-if-buy'
 import { money, fmtDate } from '@/lib/format'
 import { computeInvestmentMetrics, pct } from '@/lib/domain/calculations'
 import { txTypeBadgeClass } from '@/lib/domain/transaction-helpers'
@@ -46,6 +47,8 @@ export default async function InvestmentDetailPage({
 
   const isUnit = hasUnits(investment.type)
   const hasSold = m.realizedProfit !== 0
+  const quantityHeld = m.quantity ?? 0
+  const showWhatIfBuy = isUnit && quantityHeld > 0
   const statusLabel = m.isClosed ? 'Closed position' : 'Open position'
 
   return (
@@ -177,10 +180,10 @@ export default async function InvestmentDetailPage({
         </div>
       )}
 
-      {/* Quantity / price row for unit assets that aren't closed */}
+      {/* Quantity / price / avg buy price row for unit assets that aren't closed */}
       {isUnit && !m.isClosed && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-sm">
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
                 Quantity held
@@ -201,6 +204,14 @@ export default async function InvestmentDetailPage({
             </div>
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
+                Avg buy price
+              </p>
+              <p className="mt-1 text-base text-slate-900 tabular-nums">
+                {m.averageBuyPrice !== null ? money(m.averageBuyPrice) : '—'}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
                 Last updated
               </p>
               <p className="mt-1 text-base text-slate-900">
@@ -209,6 +220,15 @@ export default async function InvestmentDetailPage({
             </div>
           </div>
         </div>
+      )}
+
+      {/* What-if buy simulator: only for unit assets with a position */}
+      {showWhatIfBuy && (
+        <WhatIfBuy
+          quantityHeld={quantityHeld}
+          remainingCostBasis={m.remainingCostBasis}
+          currentAverageBuyPrice={m.averageBuyPrice}
+        />
       )}
 
       {investment.notes && (

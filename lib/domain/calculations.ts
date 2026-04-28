@@ -23,6 +23,7 @@ export type InvestmentMetrics = {
   totalProfitPct: number | null
   isClosed: boolean                 // unit type with qty = 0 after having activity
   hasActivity: boolean              // any transactions at all
+  averageBuyPrice: number | null    // GAK: remainingCostBasis / quantity (unit types only, null if qty = 0)
 }
 
 export function computeInvestmentMetrics(
@@ -77,6 +78,7 @@ export function computeInvestmentMetrics(
     const totalProfitPct =
       totalEverInvested > 0 ? totalProfit / totalEverInvested : null
     const isClosed = hasActivity && sharesHeld <= 0
+    const averageBuyPrice = sharesHeld > 0 ? costBasisHeld / sharesHeld : null
 
     return {
       quantity: sharesHeld,
@@ -89,6 +91,7 @@ export function computeInvestmentMetrics(
       totalProfitPct,
       isClosed,
       hasActivity,
+      averageBuyPrice,
     }
   }
 
@@ -124,6 +127,7 @@ export function computeInvestmentMetrics(
     totalProfitPct,
     isClosed: false,
     hasActivity,
+    averageBuyPrice: null,
   }
 }
 

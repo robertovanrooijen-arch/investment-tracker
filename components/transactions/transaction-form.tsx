@@ -7,9 +7,17 @@ import { Field } from '@/components/ui/field'
 import { Button } from '@/components/ui/button'
 import { money } from '@/lib/format'
 
-const UNIT_TYPES = new Set(['stock', 'etf', 'crypto'])
+const UNIT_TYPES = new Set(['stock', 'ETF', 'crypto'])
 
-type TxType = 'buy' | 'sell' | 'dividend' | 'deposit' | 'withdraw' | 'interest' | 'fee'
+type TxType =
+  | 'buy'
+  | 'sell'
+  | 'dividend'
+  | 'deposit'
+  | 'withdraw'
+  | 'interest'
+  | 'fee'
+  | 'value update'
 
 export type InvestmentOption = {
   id: string
@@ -37,7 +45,13 @@ type Props = {
 }
 
 const UNIT_TX_TYPES: TxType[] = ['buy', 'sell', 'dividend']
-const AMOUNT_TX_TYPES: TxType[] = ['deposit', 'withdraw', 'interest', 'fee']
+const AMOUNT_TX_TYPES: TxType[] = [
+  'deposit',
+  'withdraw',
+  'interest',
+  'fee',
+  'value update',
+]
 
 const TX_LABELS: Record<TxType, string> = {
   buy: 'Buy',
@@ -47,6 +61,7 @@ const TX_LABELS: Record<TxType, string> = {
   withdraw: 'Withdraw',
   interest: 'Interest',
   fee: 'Fee',
+  'value update': 'Value update',
 }
 
 function todayISO() {
@@ -84,10 +99,11 @@ export function TransactionForm({ investments, initial }: Props) {
     [investments, investmentId]
   )
 
-  const isUnit = !!selectedInvestment && UNIT_TYPES.has(selectedInvestment.type)
+  const isUnit =
+    !!selectedInvestment && UNIT_TYPES.has(selectedInvestment.type)
+
   const allowedTypes: TxType[] = isUnit ? UNIT_TX_TYPES : AMOUNT_TX_TYPES
 
-  // If the investment changes and the current tx type is no longer valid, switch it.
   useEffect(() => {
     if (!selectedInvestment) return
     if (!allowedTypes.includes(type)) {
@@ -104,15 +120,17 @@ export function TransactionForm({ investments, initial }: Props) {
 
   const computedAmount = useMemo(() => {
     if (!showUnits) return null
+
     const q = parseFloat(quantity)
     const p = parseFloat(pricePerUnit)
-    if (Number.isFinite(q) && Number.isFinite(p)) {
-      const f = parseFloat(fee)
-      const feeNum = Number.isFinite(f) ? f : 0
-      const gross = q * p
-      return type === 'buy' ? gross + feeNum : gross - feeNum
-    }
-    return null
+
+    if (!Number.isFinite(q) || !Number.isFinite(p)) return null
+
+    const f = parseFloat(fee)
+    const feeNum = Number.isFinite(f) ? f : 0
+    const gross = q * p
+
+    return type === 'buy' ? gross + feeNum : gross - feeNum
   }, [showUnits, quantity, pricePerUnit, fee, type])
 
   async function onSubmit(e: FormEvent) {
@@ -123,6 +141,7 @@ export function TransactionForm({ investments, initial }: Props) {
       setError('Please select an investment.')
       return
     }
+
     if (!date) {
       setError('Please choose a date.')
       return
@@ -143,6 +162,7 @@ export function TransactionForm({ investments, initial }: Props) {
         setError('Quantity must be greater than 0.')
         return
       }
+
       if (!Number.isFinite(finalPrice) || finalPrice < 0) {
         setError('Price per unit must be 0 or higher.')
         return
@@ -161,6 +181,7 @@ export function TransactionForm({ investments, initial }: Props) {
       finalAmount = type === 'buy' ? gross + feeVal : gross - feeVal
     } else {
       finalAmount = parseFloat(amount)
+
       if (!Number.isFinite(finalAmount) || finalAmount < 0) {
         setError('Amount must be 0 or higher.')
         return
@@ -168,7 +189,19 @@ export function TransactionForm({ investments, initial }: Props) {
     }
 
     setSaving(true)
+
     try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser()
+
+      if (userError || !user) {
+        setError('You are not signed in.')
+        setSaving(false)
+        return
+      }
+
       const payload = {
         investment_id: investmentId,
         type,
@@ -181,8 +214,14 @@ export function TransactionForm({ investments, initial }: Props) {
       }
 
       const { error: dbError } = initial
-        ? await supabase.from('transactions').update(payload).eq('id', initial.id)
-        : await supabase.from('transactions').insert(payload)
+        ? await supabase
+            .from('transactions')
+            .update(payload)
+            .eq('id', initial.id)
+        : await supabase.from('transactions').insert({
+            ...payload,
+            user_id: user.id,
+          })
 
       if (dbError) {
         setError(dbError.message)
@@ -190,11 +229,17 @@ export function TransactionForm({ investments, initial }: Props) {
         return
       }
 
-      // Keep the investment's current_value in sync when a buy/sell price is recorded.
       if (showUnits && finalPrice != null && finalPrice > 0) {
         await supabase
           .from('investments')
-          .update({ current_value: finalPrice })
+          .update({ current_price: finalPrice })
+          .eq('id', investmentId)
+      }
+
+      if (type === 'value update' && finalAmount !== null) {
+        await supabase
+          .from('investments')
+          .update({ current_value: finalAmount })
           .eq('id', investmentId)
       }
 
@@ -210,7 +255,10 @@ export function TransactionForm({ investments, initial }: Props) {
     return (
       <div className="rounded-lg border border-slate-200 bg-white p-6 text-sm text-slate-600">
         You need at least one investment before you can record activity.{' '}
-        <a href="/investments/new" className="font-medium text-slate-900 underline">
+        <a
+          href="/investments/new"
+          className="font-medium text-slate-900 underline"
+        >
           Create one first
         </a>
         .
@@ -347,12 +395,16 @@ export function TransactionForm({ investments, initial }: Props) {
       {showUnits && computedAmount !== null && (
         <p className="text-sm text-slate-600">
           Total {type === 'buy' ? 'cost' : 'proceeds'}:{' '}
-          <span className="font-medium text-slate-900">{money(computedAmount)}</span>
+          <span className="font-medium text-slate-900">
+            {money(computedAmount)}
+          </span>
         </p>
       )}
 
       {error && (
-        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+          {error}
+        </p>
       )}
 
       <div className="flex items-center gap-3">
