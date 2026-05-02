@@ -5,6 +5,7 @@ import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
 import { StatCard } from '@/components/ui/stat-card'
 import { WhatIfBuy } from '@/components/investments/what-if-buy'
+import { RefreshPriceButton } from '@/components/investments/refresh-price-button'
 import { money, fmtDate } from '@/lib/format'
 import { computeInvestmentMetrics, pct } from '@/lib/domain/calculations'
 import { txTypeBadgeClass } from '@/lib/domain/transaction-helpers'
@@ -42,8 +43,8 @@ export default async function InvestmentDetailPage({
     m.totalProfit > 0
       ? 'positive'
       : m.totalProfit < 0
-      ? 'negative'
-      : 'neutral'
+        ? 'negative'
+        : 'neutral'
 
   const isUnit = hasUnits(investment.type)
   const hasSold = m.realizedProfit !== 0
@@ -101,7 +102,6 @@ export default async function InvestmentDetailPage({
         </div>
       )}
 
-      {/* Closed unit position: simpler display */}
       {isUnit && m.isClosed ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <StatCard label="Quantity held" value="0" hint="Fully sold" />
@@ -137,7 +137,6 @@ export default async function InvestmentDetailPage({
         </div>
       )}
 
-      {/* Realized / unrealized breakdown only when there's been a sell */}
       {isUnit && hasSold && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
           <h2 className="text-base font-semibold text-slate-900">
@@ -153,8 +152,8 @@ export default async function InvestmentDetailPage({
                   m.realizedProfit > 0
                     ? 'text-emerald-600'
                     : m.realizedProfit < 0
-                    ? 'text-rose-600'
-                    : 'text-slate-900'
+                      ? 'text-rose-600'
+                      : 'text-slate-900'
                 }`}
               >
                 {money(m.realizedProfit)}
@@ -169,8 +168,8 @@ export default async function InvestmentDetailPage({
                   m.unrealizedProfit > 0
                     ? 'text-emerald-600'
                     : m.unrealizedProfit < 0
-                    ? 'text-rose-600'
-                    : 'text-slate-900'
+                      ? 'text-rose-600'
+                      : 'text-slate-900'
                 }`}
               >
                 {m.isClosed ? '—' : money(m.unrealizedProfit)}
@@ -180,7 +179,6 @@ export default async function InvestmentDetailPage({
         </div>
       )}
 
-      {/* Quantity / price / avg buy price row for unit assets that aren't closed */}
       {isUnit && !m.isClosed && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-sm">
@@ -192,6 +190,7 @@ export default async function InvestmentDetailPage({
                 {m.quantity ?? 0}
               </p>
             </div>
+
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
                 Current price
@@ -202,6 +201,7 @@ export default async function InvestmentDetailPage({
                   : '—'}
               </p>
             </div>
+
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
                 Avg buy price
@@ -210,19 +210,27 @@ export default async function InvestmentDetailPage({
                 {m.averageBuyPrice !== null ? money(m.averageBuyPrice) : '—'}
               </p>
             </div>
+
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
-                Last updated
+                Price updated
               </p>
               <p className="mt-1 text-base text-slate-900">
-                {fmtDate(investment.updated_at)}
+                {fmtDate(investment.price_last_updated_at)}
               </p>
             </div>
+          </div>
+
+          <div className="mt-4 border-t border-slate-100 pt-4">
+            <RefreshPriceButton
+              investmentId={investment.id}
+              lastUpdatedAt={investment.price_last_updated_at}
+              priceSource={investment.price_source}
+            />
           </div>
         </div>
       )}
 
-      {/* What-if buy simulator: only for unit assets with a position */}
       {showWhatIfBuy && (
         <WhatIfBuy
           quantityHeld={quantityHeld}

@@ -29,24 +29,27 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
   const [ticker, setTicker] = useState(initial?.ticker ?? '')
   const [type, setType] = useState<InvestmentType>(initial?.type ?? 'stock')
   const [platform, setPlatform] = useState(initial?.platform ?? PLATFORMS[0])
+  const [currency, setCurrency] = useState(initial?.currency ?? 'EUR')
+
   const [currentPrice, setCurrentPrice] = useState(
     initial?.current_price !== null && initial?.current_price !== undefined
       ? String(initial.current_price)
       : ''
   )
+
   const [currentValue, setCurrentValue] = useState(
     initial?.current_value !== null && initial?.current_value !== undefined
       ? String(initial.current_value)
       : ''
   )
-  const [notes, setNotes] = useState(initial?.notes ?? '')
 
+  const [notes, setNotes] = useState(initial?.notes ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const showPrice = hasUnits(type)
   const showValue = !hasUnits(type)
-
+  const requiresTicker = hasUnits(type)
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -57,13 +60,18 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
       return
     }
 
+    if (requiresTicker && !ticker.trim()) {
+      setError('Ticker is required for stocks, ETFs, and crypto.')
+      return
+    }
+
     setSaving(true)
 
-    // Get the current user — we need user_id for inserts (RLS will also enforce it).
     const {
       data: { user },
       error: userErr,
     } = await supabase.auth.getUser()
+
     if (userErr || !user) {
       setError('You are not signed in.')
       setSaving(false)
@@ -72,13 +80,15 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
 
     const payload: InvestmentInput = {
       name: name.trim(),
-      ticker: ticker.trim() ? ticker.trim() : null,
+      ticker: ticker.trim() ? ticker.trim().toUpperCase() : null,
       type,
       platform,
       current_price:
         showPrice && currentPrice !== '' ? Number(currentPrice) : null,
-        current_value:
-        showValue && currentValue !== '' ? Number(currentValue) : null,      notes: notes.trim() ? notes.trim() : null,
+      current_value:
+        showValue && currentValue !== '' ? Number(currentValue) : null,
+      currency: currency.trim() || 'EUR',
+      notes: notes.trim() ? notes.trim() : null,
     }
 
     if (isEdit && initial) {
@@ -86,6 +96,7 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
         .from('investments')
         .update(payload)
         .eq('id', initial.id)
+
       if (updateErr) {
         setError(updateErr.message)
         setSaving(false)
@@ -95,6 +106,7 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
       const { error: insertErr } = await supabase
         .from('investments')
         .insert({ ...payload, user_id: user.id })
+
       if (insertErr) {
         setError(insertErr.message)
         setSaving(false)
@@ -103,11 +115,12 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
     }
 
     if (isEdit && initial) {
-        router.push(`/investments/${initial.id}`)
-      } else {
-        router.push('/investments')
-      }
-      router.refresh()
+      router.push(`/investments/${initial.id}`)
+    } else {
+      router.push('/investments')
+    }
+
+    router.refresh()
   }
 
   return (
@@ -127,16 +140,6 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
           />
         </Field>
 
-        <Field label="Ticker" htmlFor="ticker" hint="Optional">
-          <input
-            id="ticker"
-            className={inputClass}
-            value={ticker ?? ''}
-            onChange={(e) => setTicker(e.target.value)}
-            placeholder="e.g. AAPL, BTC"
-          />
-        </Field>
-
         <Field label="Type" htmlFor="type" required>
           <select
             id="type"
@@ -149,6 +152,40 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
                 {c}
               </option>
             ))}
+          </select>
+        </Field>
+
+        <Field
+          label={requiresTicker ? 'Ticker' : 'Ticker (optional)'}
+          htmlFor="ticker"
+          required={requiresTicker}
+        >
+          <input
+            id="ticker"
+            className={inputClass}
+            value={ticker}
+            onChange={(e) => setTicker(e.target.value.toUpperCase())}
+            placeholder="e.g. TSLA, VWCE.DE, BTC-EUR"
+          />
+          {requiresTicker && (
+            <p className="mt-1 text-xs text-slate-500">
+              Must match Yahoo Finance format. US stocks:{' '}
+              <code>TSLA</code>. Amsterdam: <code>INGA.AS</code>. Xetra:{' '}
+              <code>VWCE.DE</code>. Crypto in EUR: <code>BTC-EUR</code>.
+            </p>
+          )}
+        </Field>
+
+        <Field label="Currency" htmlFor="currency">
+          <select
+            id="currency"
+            className={inputClass}
+            value={currency}
+            onChange={(e) => setCurrency(e.target.value)}
+          >
+            <option value="EUR">EUR</option>
+            <option value="USD">USD</option>
+            <option value="GBP">GBP</option>
           </select>
         </Field>
 
@@ -171,7 +208,8 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
           <Field
             label="Current price per unit"
             htmlFor="current_price"
-            hint="Latest price per share/coin. Used with your quantity to compute value."          >
+            hint="Latest price per share/coin. Used with your quantity to compute value."
+          >
             <input
               id="current_price"
               type="number"
@@ -185,7 +223,7 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
           </Field>
         )}
 
-{showValue && (
+        {showValue && (
           <Field
             label="Current value"
             htmlFor="current_value"
@@ -210,7 +248,7 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
               id="notes"
               rows={3}
               className={inputClass}
-              value={notes ?? ''}
+              value={notes}
               onChange={(e) => setNotes(e.target.value)}
               placeholder="Anything you want to remember about this investment"
             />

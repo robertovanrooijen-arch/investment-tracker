@@ -5,30 +5,34 @@ export type InvestmentType =
   | 'cash'
   | 'real estate'
   | 'custom'
-
-export type Investment = {
-  id: string
-  user_id: string
-  name: string
-  ticker: string | null
-  type: InvestmentType
-  platform: string
-  current_price: number | null
-  current_value: number | null
-  notes: string | null
-  created_at: string
-  updated_at: string
-}
-
-export type InvestmentInput = {
-  name: string
-  ticker: string | null
-  type: InvestmentType
-  platform: string
-  current_price: number | null
-  current_value: number | null
-  notes: string | null
-}
+  
+  export type Investment = {
+    id: string
+    user_id: string
+    name: string
+    ticker: string | null
+    type: InvestmentType
+    platform: string
+    current_price: number | null
+    current_value: number | null
+    currency: string
+    price_last_updated_at: string | null
+    price_source: string | null
+    notes: string | null
+    created_at: string
+    updated_at: string
+  }
+  
+  export type InvestmentInput = {
+    name: string
+    ticker: string | null
+    type: InvestmentType
+    platform: string
+    current_price: number | null
+    current_value: number | null
+    currency: string
+    notes: string | null
+  }
 
 export type TransactionType =
   | 'buy'
@@ -49,4 +53,7 @@ export type Transaction = {
   date: string
   notes: string | null
   created_at: string
+  currency: string
+  price_last_updated_at: string | null
+  price_source: string | null
 }
