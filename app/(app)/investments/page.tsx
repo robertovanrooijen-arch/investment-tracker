@@ -3,34 +3,37 @@ import { createClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/page-header'
 import { money, fmtDate } from '@/lib/format'
 import { computeInvestmentMetrics, pct } from '@/lib/domain/calculations'
+import { loadFxRates } from '@/lib/domain/fx'
 import type { Investment, Transaction } from '@/types/database'
 
 export default async function InvestmentsPage() {
   const supabase = await createClient()
 
-  const [invRes, txRes] = await Promise.all([
+  const [invRes, txRes, fxRes] = await Promise.all([
     supabase
       .from('investments')
       .select('*')
       .order('updated_at', { ascending: false })
       .returns<Investment[]>(),
     supabase.from('transactions').select('*').returns<Transaction[]>(),
+    loadFxRates(supabase),
   ])
 
   const error = invRes.error
   const investments = invRes.data ?? []
   const transactions = txRes.data ?? []
+  const fxRates = fxRes.rates
 
   const rows = investments.map((inv) => ({
     inv,
-    m: computeInvestmentMetrics(inv, transactions),
+    m: computeInvestmentMetrics(inv, transactions, fxRates),
   }))
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Investments"
-        subtitle="Every position you're tracking."
+        subtitle="Every position you're tracking. Values shown in EUR."
         action={
           <Link
             href="/investments/new"
@@ -70,8 +73,8 @@ export default async function InvestmentsPage() {
                 <th className="px-6 py-3 font-medium">Name</th>
                 <th className="px-6 py-3 font-medium">Type</th>
                 <th className="px-6 py-3 font-medium">Platform</th>
-                <th className="px-6 py-3 font-medium text-right">Value</th>
-                <th className="px-6 py-3 font-medium text-right">P / L</th>
+                <th className="px-6 py-3 font-medium text-right">Value EUR</th>
+                <th className="px-6 py-3 font-medium text-right">P / L EUR</th>
                 <th className="px-6 py-3 font-medium">Updated</th>
                 <th className="px-6 py-3" />
               </tr>
@@ -83,8 +86,9 @@ export default async function InvestmentsPage() {
                   m.totalProfit > 0
                     ? 'text-emerald-600'
                     : m.totalProfit < 0
-                    ? 'text-rose-600'
-                    : 'text-slate-900'
+                      ? 'text-rose-600'
+                      : 'text-slate-900'
+
                 return (
                   <tr
                     key={inv.id}
@@ -100,30 +104,34 @@ export default async function InvestmentsPage() {
                             </span>
                           )}
                         </div>
-                        {inv.ticker && (
-                          <div className="text-xs text-slate-500">
-                            {inv.ticker}
-                          </div>
-                        )}
+
+                        <div className="text-xs text-slate-500">
+                          {inv.ticker ? `${inv.ticker} · ` : ''}
+                          {inv.currency ?? 'EUR'}
+                        </div>
                       </Link>
                     </td>
+
                     <td className="px-6 py-4">
                       <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
                         {inv.type}
                       </span>
                     </td>
+
                     <td className="px-6 py-4 text-sm text-slate-700">
                       {inv.platform}
                     </td>
+
                     <td className="px-6 py-4 text-right text-sm text-slate-900 tabular-nums">
-                      {money(m.currentValue)}
+                      {money(m.currentValue, 'EUR')}
                     </td>
+
                     <td
                       className={`px-6 py-4 text-right text-sm tabular-nums ${plTone}`}
                     >
                       {showPL ? (
                         <>
-                          <div>{money(m.totalProfit)}</div>
+                          <div>{money(m.totalProfit, 'EUR')}</div>
                           <div className="text-xs">
                             {m.totalProfitPct !== null
                               ? pct(m.totalProfitPct)
@@ -134,9 +142,11 @@ export default async function InvestmentsPage() {
                         <span className="text-slate-400">—</span>
                       )}
                     </td>
+
                     <td className="px-6 py-4 text-sm text-slate-500">
                       {fmtDate(inv.updated_at)}
                     </td>
+
                     <td className="px-6 py-4 text-right">
                       <Link
                         href={`/investments/${inv.id}`}
@@ -158,8 +168,9 @@ export default async function InvestmentsPage() {
                 m.totalProfit > 0
                   ? 'text-emerald-600'
                   : m.totalProfit < 0
-                  ? 'text-rose-600'
-                  : 'text-slate-500'
+                    ? 'text-rose-600'
+                    : 'text-slate-500'
+
               return (
                 <li key={inv.id}>
                   <Link
@@ -175,15 +186,19 @@ export default async function InvestmentsPage() {
                           </span>
                         )}
                       </div>
+
                       <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
                         <span>{inv.type}</span>
                         <span>·</span>
                         <span>{inv.platform}</span>
+                        <span>·</span>
+                        <span>{inv.currency ?? 'EUR'}</span>
                       </div>
                     </div>
+
                     <div className="text-right shrink-0">
                       <div className="text-sm text-slate-900 tabular-nums">
-                        {money(m.currentValue)}
+                        {money(m.currentValue, 'EUR')}
                       </div>
                       <div className={`text-xs tabular-nums ${plTone}`}>
                         {showPL

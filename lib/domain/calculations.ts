@@ -1,5 +1,6 @@
 import type { Investment, Transaction } from '@/types/database'
 import { hasUnits } from '@/lib/domain/constants'
+import type { FxRates } from '@/lib/domain/fx'
 
 // ---------- Sorting ----------
 
@@ -10,25 +11,53 @@ function sortChronologically(txs: Transaction[]): Transaction[] {
   })
 }
 
+// ---------- FX helper ----------
+
+function fxRateFor(investment: Investment, fxRates?: FxRates): number {
+  if (!fxRates) return 1
+  const currency = investment.currency ?? 'EUR'
+  return fxRates[currency] ?? 1
+}
+
+function applyFx(m: InvestmentMetrics, rate: number): InvestmentMetrics {
+  if (rate === 1) return m
+
+  return {
+    quantity: m.quantity,
+    currentValue: m.currentValue * rate,
+    remainingCostBasis: m.remainingCostBasis * rate,
+    realizedProfit: m.realizedProfit * rate,
+    unrealizedProfit: m.unrealizedProfit * rate,
+    totalProfit: m.totalProfit * rate,
+    totalEverInvested: m.totalEverInvested * rate,
+    totalProfitPct: m.totalProfitPct,
+    isClosed: m.isClosed,
+    hasActivity: m.hasActivity,
+    averageBuyPrice:
+      m.averageBuyPrice !== null ? m.averageBuyPrice * rate : null,
+  }
+}
+
 // ---------- Per-investment metrics ----------
 
 export type InvestmentMetrics = {
-  quantity: number | null           // null for non-unit types
-  currentValue: number              // value of what you currently hold
-  remainingCostBasis: number        // money still tied up in this position
-  realizedProfit: number            // profit locked in from sells / withdraws
-  unrealizedProfit: number          // profit on what you still hold
-  totalProfit: number               // realized + unrealized
-  totalEverInvested: number         // denominator for %, independent of sells
+  quantity: number | null
+  currentValue: number
+  remainingCostBasis: number
+  realizedProfit: number
+  unrealizedProfit: number
+  totalProfit: number
+  totalEverInvested: number
   totalProfitPct: number | null
-  isClosed: boolean                 // unit type with qty = 0 after having activity
-  hasActivity: boolean              // any transactions at all
-  averageBuyPrice: number | null    // GAK: remainingCostBasis / quantity (unit types only, null if qty = 0)
+  isClosed: boolean
+  hasActivity: boolean
+  averageBuyPrice: number | null
 }
 
 export function computeInvestmentMetrics(
   investment: Investment,
-  transactions: Transaction[]
+  transactions: Transaction[],
+  fxRates?: FxRates
 ): InvestmentMetrics {
   const txs = sortChronologically(
     transactions.filter((t) => t.investment_id === investment.id)
@@ -56,19 +85,18 @@ export function computeInvestmentMetrics(
         tx.quantity !== null &&
         tx.price_per_unit !== null
       ) {
-        // Cap against sharesHeld to avoid negative holdings if data got in
-        // somehow (form validation should prevent this going forward).
         const sellQty = Math.min(tx.quantity, sharesHeld)
+
         if (sharesHeld > 0 && sellQty > 0) {
           const avgCost = costBasisHeld / sharesHeld
           const soldCost = avgCost * sellQty
           const proceeds = sellQty * tx.price_per_unit - (tx.fee ?? 0)
+
           realizedProfit += proceeds - soldCost
           costBasisHeld -= soldCost
           sharesHeld -= sellQty
         }
       }
-      // deposit / withdraw / value update are not meaningful for unit assets
     }
 
     const price = investment.current_price ?? 0
@@ -80,7 +108,7 @@ export function computeInvestmentMetrics(
     const isClosed = hasActivity && sharesHeld <= 0
     const averageBuyPrice = sharesHeld > 0 ? costBasisHeld / sharesHeld : null
 
-    return {
+    const native: InvestmentMetrics = {
       quantity: sharesHeld,
       currentValue,
       remainingCostBasis: costBasisHeld,
@@ -93,6 +121,8 @@ export function computeInvestmentMetrics(
       hasActivity,
       averageBuyPrice,
     }
+
+    return applyFx(native, fxRateFor(investment, fxRates))
   }
 
   // Non-unit types: cash / real estate / custom
@@ -107,7 +137,6 @@ export function computeInvestmentMetrics(
     } else if (tx.type === 'withdraw') {
       invested -= (tx.amount ?? 0) - (tx.fee ?? 0)
     }
-    // value update doesn't change invested; it updates investment.current_value elsewhere
   }
 
   const currentValue = investment.current_value ?? 0
@@ -116,7 +145,7 @@ export function computeInvestmentMetrics(
   const totalProfitPct =
     totalEverInvested > 0 ? totalProfit / totalEverInvested : null
 
-  return {
+  const native: InvestmentMetrics = {
     quantity: null,
     currentValue,
     remainingCostBasis: invested,
@@ -129,13 +158,15 @@ export function computeInvestmentMetrics(
     hasActivity,
     averageBuyPrice: null,
   }
+
+  return applyFx(native, fxRateFor(investment, fxRates))
 }
 
 // ---------- Portfolio-wide metrics ----------
 
 export type PortfolioMetrics = {
   totalValue: number
-  totalInvested: number            // sum of remainingCostBasis across investments
+  totalInvested: number
   totalRealized: number
   totalUnrealized: number
   totalProfit: number
@@ -145,7 +176,8 @@ export type PortfolioMetrics = {
 
 export function computePortfolioMetrics(
   investments: Investment[],
-  transactions: Transaction[]
+  transactions: Transaction[],
+  fxRates?: FxRates
 ): PortfolioMetrics {
   let totalValue = 0
   let totalInvested = 0
@@ -154,7 +186,7 @@ export function computePortfolioMetrics(
   let totalEverInvested = 0
 
   for (const inv of investments) {
-    const m = computeInvestmentMetrics(inv, transactions)
+    const m = computeInvestmentMetrics(inv, transactions, fxRates)
     totalValue += m.currentValue
     totalInvested += m.remainingCostBasis
     totalRealized += m.realizedProfit
@@ -188,43 +220,56 @@ export type AllocationSlice = {
 export function computeAllocation(
   investments: Investment[],
   transactions: Transaction[],
-  keyFn: (inv: Investment) => string
+  keyFn: (inv: Investment) => string,
+  fxRates?: FxRates
 ): AllocationSlice[] {
   const buckets = new Map<string, number>()
   let total = 0
 
   for (const inv of investments) {
-    const { currentValue } = computeInvestmentMetrics(inv, transactions)
+    const { currentValue } = computeInvestmentMetrics(
+      inv,
+      transactions,
+      fxRates
+    )
+
     if (currentValue <= 0) continue
+
     const k = keyFn(inv)
     buckets.set(k, (buckets.get(k) ?? 0) + currentValue)
     total += currentValue
   }
 
   const slices: AllocationSlice[] = []
+
   for (const [key, value] of buckets) {
     slices.push({ key, value, pct: total > 0 ? value / total : 0 })
   }
+
   slices.sort((a, b) => b.value - a.value)
   return slices
 }
 
 // ---------- Form validation helper ----------
 
-// Net units held for an investment across all given transactions,
-// optionally EXCLUDING one transaction (used when editing).
 export function heldQuantity(
   investmentId: string,
   transactions: Transaction[],
   excludeTxId?: string
 ): number {
   let held = 0
+
   for (const tx of transactions) {
     if (tx.investment_id !== investmentId) continue
     if (excludeTxId && tx.id === excludeTxId) continue
-    if (tx.type === 'buy' && tx.quantity !== null) held += tx.quantity
-    else if (tx.type === 'sell' && tx.quantity !== null) held -= tx.quantity
+
+    if (tx.type === 'buy' && tx.quantity !== null) {
+      held += tx.quantity
+    } else if (tx.type === 'sell' && tx.quantity !== null) {
+      held -= tx.quantity
+    }
   }
+
   return held
 }
 

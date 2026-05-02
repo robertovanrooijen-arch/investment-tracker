@@ -4,12 +4,14 @@ import { PageHeader } from '@/components/ui/page-header'
 import { StatCard } from '@/components/ui/stat-card'
 import { AllocationBreakdown } from '@/components/dashboard/allocation-breakdown'
 import { RecentTransactions } from '@/components/dashboard/recent-transactions'
+import { RefreshFxButton } from '@/components/dashboard/refresh-fx-button'
 import { money } from '@/lib/format'
 import {
   computePortfolioMetrics,
   computeAllocation,
   pct,
 } from '@/lib/domain/calculations'
+import { loadFxRates } from '@/lib/domain/fx'
 import { categoryColor, platformColor } from '@/lib/colors'
 import type { Investment, Transaction, InvestmentType } from '@/types/database'
 
@@ -24,7 +26,7 @@ type TxWithInvestment = Transaction & {
 export default async function DashboardPage() {
   const supabase = await createClient()
 
-  const [invRes, txRes, recentRes] = await Promise.all([
+  const [invRes, txRes, recentRes, fxRes] = await Promise.all([
     supabase.from('investments').select('*').returns<Investment[]>(),
     supabase.from('transactions').select('*').returns<Transaction[]>(),
     supabase
@@ -34,40 +36,50 @@ export default async function DashboardPage() {
       .order('created_at', { ascending: false })
       .limit(5)
       .returns<TxWithInvestment[]>(),
+    loadFxRates(supabase),
   ])
 
   const investments = invRes.data ?? []
   const transactions = txRes.data ?? []
   const recent = recentRes.data ?? []
+  const fxRates = fxRes.rates
+  const fxLastUpdated = fxRes.lastUpdatedAt
 
-  const metrics = computePortfolioMetrics(investments, transactions)
+  const metrics = computePortfolioMetrics(investments, transactions, fxRates)
+
   const byCategory = computeAllocation(
     investments,
     transactions,
-    (i) => i.type
+    (i) => i.type,
+    fxRates
   )
+
   const byPlatform = computeAllocation(
     investments,
     transactions,
-    (i) => i.platform
+    (i) => i.platform,
+    fxRates
   )
 
   const profitTone: 'positive' | 'negative' | 'neutral' =
     metrics.totalProfit > 0
       ? 'positive'
       : metrics.totalProfit < 0
-      ? 'negative'
-      : 'neutral'
+        ? 'negative'
+        : 'neutral'
 
   const isEmpty = investments.length === 0
   const hasHistory = metrics.totalEverInvested > 0
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Dashboard"
-        subtitle="An overview of your entire portfolio."
-      />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <PageHeader
+          title="Dashboard"
+          subtitle="An overview of your entire portfolio in EUR."
+        />
+        <RefreshFxButton lastUpdatedAt={fxLastUpdated} />
+      </div>
 
       {isEmpty ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center">
@@ -87,24 +99,26 @@ export default async function DashboardPage() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <StatCard
               label="Portfolio value"
-              value={money(metrics.totalValue)}
+              value={money(metrics.totalValue, 'EUR')}
+              hint="Converted to EUR"
             />
             <StatCard
               label="Total invested"
-              value={money(metrics.totalInvested)}
-              hint="Money currently tied up in open positions"
+              value={money(metrics.totalInvested, 'EUR')}
+              hint="Cost basis converted to EUR"
             />
             <StatCard
               label="Profit / loss"
-              value={hasHistory ? money(metrics.totalProfit) : '—'}
+              value={hasHistory ? money(metrics.totalProfit, 'EUR') : '—'}
               hint={
                 hasHistory
                   ? `${
                       metrics.totalProfitPct !== null
                         ? pct(metrics.totalProfitPct)
                         : '—'
-                    } · ${money(metrics.totalRealized)} realized · ${money(
-                      metrics.totalUnrealized
+                    } · ${money(metrics.totalRealized, 'EUR')} realized · ${money(
+                      metrics.totalUnrealized,
+                      'EUR'
                     )} unrealized`
                   : 'Record a buy or deposit to start tracking gains'
               }

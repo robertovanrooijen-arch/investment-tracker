@@ -38,6 +38,7 @@ export default async function InvestmentDetailPage({
   const investment = invRes.data
   const transactions = txRes.data ?? []
   const m = computeInvestmentMetrics(investment, transactions)
+  const currency = investment.currency ?? 'EUR'
 
   const profitTone: 'positive' | 'negative' | 'neutral' =
     m.totalProfit > 0
@@ -67,8 +68,8 @@ export default async function InvestmentDetailPage({
         title={investment.name}
         subtitle={
           investment.ticker
-            ? `${investment.ticker} · ${investment.type} · ${investment.platform}`
-            : `${investment.type} · ${investment.platform}`
+            ? `${investment.ticker} · ${investment.type} · ${investment.platform} · ${currency}`
+            : `${investment.type} · ${investment.platform} · ${currency}`
         }
         action={
           <div className="flex items-center gap-2">
@@ -107,10 +108,13 @@ export default async function InvestmentDetailPage({
           <StatCard label="Quantity held" value="0" hint="Fully sold" />
           <StatCard
             label="Realized profit / loss"
-            value={money(m.realizedProfit)}
+            value={money(m.realizedProfit, currency)}
             hint={
               m.totalProfitPct !== null
-                ? `${pct(m.totalProfitPct)} on ${money(m.totalEverInvested)} invested`
+                ? `${pct(m.totalProfitPct)} on ${money(
+                    m.totalEverInvested,
+                    currency
+                  )} invested`
                 : undefined
             }
             tone={profitTone}
@@ -118,15 +122,19 @@ export default async function InvestmentDetailPage({
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <StatCard label="Current value" value={money(m.currentValue)} />
+          <StatCard
+            label="Current value"
+            value={money(m.currentValue, currency)}
+            hint={`Native currency: ${currency}`}
+          />
           <StatCard
             label="Total invested"
-            value={money(m.remainingCostBasis)}
+            value={money(m.remainingCostBasis, currency)}
             hint={isUnit ? 'Cost basis of shares held' : undefined}
           />
           <StatCard
             label="Profit / loss"
-            value={m.hasActivity ? money(m.totalProfit) : '—'}
+            value={m.hasActivity ? money(m.totalProfit, currency) : '—'}
             hint={
               m.hasActivity && m.totalProfitPct !== null
                 ? pct(m.totalProfitPct)
@@ -156,7 +164,7 @@ export default async function InvestmentDetailPage({
                       : 'text-slate-900'
                 }`}
               >
-                {money(m.realizedProfit)}
+                {money(m.realizedProfit, currency)}
               </p>
             </div>
             <div>
@@ -172,7 +180,7 @@ export default async function InvestmentDetailPage({
                       : 'text-slate-900'
                 }`}
               >
-                {m.isClosed ? '—' : money(m.unrealizedProfit)}
+                {m.isClosed ? '—' : money(m.unrealizedProfit, currency)}
               </p>
             </div>
           </div>
@@ -197,7 +205,7 @@ export default async function InvestmentDetailPage({
               </p>
               <p className="mt-1 text-base text-slate-900 tabular-nums">
                 {investment.current_price !== null
-                  ? money(investment.current_price)
+                  ? money(investment.current_price, currency)
                   : '—'}
               </p>
             </div>
@@ -207,7 +215,9 @@ export default async function InvestmentDetailPage({
                 Avg buy price
               </p>
               <p className="mt-1 text-base text-slate-900 tabular-nums">
-                {m.averageBuyPrice !== null ? money(m.averageBuyPrice) : '—'}
+                {m.averageBuyPrice !== null
+                  ? money(m.averageBuyPrice, currency)
+                  : '—'}
               </p>
             </div>
 
@@ -300,14 +310,14 @@ export default async function InvestmentDetailPage({
                     </td>
                     <td className="px-6 py-4 text-right text-sm text-slate-700 tabular-nums">
                       {tx.price_per_unit !== null
-                        ? money(tx.price_per_unit)
+                        ? money(tx.price_per_unit, currency)
                         : '—'}
                     </td>
                     <td className="px-6 py-4 text-right text-sm text-slate-900 tabular-nums">
-                      {money(tx.amount)}
+                      {money(tx.amount, currency)}
                     </td>
                     <td className="px-6 py-4 text-right text-sm text-slate-500 tabular-nums">
-                      {tx.fee > 0 ? money(tx.fee) : '—'}
+                      {tx.fee > 0 ? money(tx.fee, currency) : '—'}
                     </td>
                     <td className="px-6 py-4 text-right">
                       <Link
@@ -340,11 +350,12 @@ export default async function InvestmentDetailPage({
                       </div>
                       <div className="text-right">
                         <div className="text-sm text-slate-900 tabular-nums">
-                          {money(tx.amount)}
+                          {money(tx.amount, currency)}
                         </div>
                         {tx.quantity !== null && tx.price_per_unit !== null && (
                           <div className="text-xs text-slate-500 tabular-nums">
-                            {tx.quantity} × {money(tx.price_per_unit)}
+                            {tx.quantity} ×{' '}
+                            {money(tx.price_per_unit, currency)}
                           </div>
                         )}
                       </div>

@@ -57,3 +57,9 @@ export type Transaction = {
   price_last_updated_at: string | null
   price_source: string | null
 }
+export type FxRate = {
+  currency: string
+  eur_per_unit: number
+  fetched_at: string
+}
+
