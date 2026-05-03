@@ -5,6 +5,7 @@ import { StatCard } from '@/components/ui/stat-card'
 import { AllocationBreakdown } from '@/components/dashboard/allocation-breakdown'
 import { RecentTransactions } from '@/components/dashboard/recent-transactions'
 import { RefreshFxButton } from '@/components/dashboard/refresh-fx-button'
+import { RefreshAllPricesButton } from '@/components/dashboard/refresh-all-prices-button'
 import { money } from '@/lib/format'
 import {
   computePortfolioMetrics,
@@ -78,7 +79,11 @@ export default async function DashboardPage() {
           title="Dashboard"
           subtitle="An overview of your entire portfolio in EUR."
         />
-        <RefreshFxButton lastUpdatedAt={fxLastUpdated} />
+
+        <div className="flex flex-col items-start gap-2 sm:items-end">
+          <RefreshAllPricesButton />
+          <RefreshFxButton lastUpdatedAt={fxLastUpdated} />
+        </div>
       </div>
 
       {isEmpty ? (
