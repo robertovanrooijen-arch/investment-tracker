@@ -15,16 +15,23 @@ type PriceResult = {
   error?: string
 }
 
+type PriceSummary = {
+  total: number
+  successful: number
+  skipped: number
+  failed: number
+  results: PriceResult[]
+}
+
+type FxSummary = {
+  ok: boolean
+  error: string | null
+}
+
 type Summary = {
-  prices: {
-    total: number
-    successful: number
-    skipped: number
-    failed: number
-    results: PriceResult[]
-  }
-  fx: { ok: boolean; error: string | null }
-  snapshotOk: boolean
+  prices: PriceSummary | null
+  fx: FxSummary | null
+  snapshotPresent: boolean
   snapshotError: string | null
 }
 
@@ -44,32 +51,50 @@ export function RefreshPortfolioButton({ lastRefreshedAt }: Props) {
     setSummary(null)
     setError(null)
     setShowDetails(false)
+
+    let res: Response
     try {
-      const res = await fetch('/api/portfolio/refresh', { method: 'POST' })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        setStatus('error')
-        setError(json.error ?? 'Could not refresh portfolio.')
-        return
-      }
-      setStatus('success')
-      setSummary({
-        prices: json.prices,
-        fx: json.fx,
-        snapshotOk: !!json.snapshot,
-        snapshotError: json.snapshot_error ?? null,
-      })
-      router.refresh()
+      res = await fetch('/api/portfolio/refresh', { method: 'POST' })
     } catch (err) {
       setStatus('error')
       setError(err instanceof Error ? err.message : 'Network error.')
+      return
     }
+
+    let json: unknown = null
+    try {
+      json = await res.json()
+    } catch {
+      // body wasn't JSON; json stays null
+    }
+
+    if (!res.ok) {
+      const msg =
+        (isObject(json) && typeof json.error === 'string' && json.error) ||
+        `Refresh failed (${res.status}).`
+      setStatus('error')
+      setError(msg)
+      return
+    }
+
+    const parsed = parseSummary(json)
+    if (!parsed) {
+      setStatus('error')
+      setError(
+        'The server replied OK but the response was missing the expected price, FX, and snapshot fields.'
+      )
+      return
+    }
+
+    setStatus('success')
+    setSummary(parsed)
+    router.refresh()
   }
 
   const issueRows =
-    summary?.prices.results.filter((r) => r.status !== 'success') ?? []
-  const fxFailed = !!summary && !summary.fx.ok
-  const snapshotFailed = !!summary && !summary.snapshotOk
+    summary?.prices?.results.filter((r) => r.status !== 'success') ?? []
+  const fxFailed = !!summary?.fx && !summary.fx.ok
+  const snapshotFailed = !!summary?.snapshotError
   const hasIssues = issueRows.length > 0 || fxFailed || snapshotFailed
 
   return (
@@ -116,36 +141,39 @@ export function RefreshPortfolioButton({ lastRefreshedAt }: Props) {
 
       {showDetails && summary && (
         <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
-          <div className="text-slate-700">
-            Prices:{' '}
-            <span className="font-medium">{summary.prices.successful}</span>{' '}
-            updated
-            {summary.prices.skipped > 0 && (
-              <>
-                ,{' '}
-                <span className="font-medium">{summary.prices.skipped}</span>{' '}
-                skipped
-              </>
-            )}
-            {summary.prices.failed > 0 && (
-              <>
-                ,{' '}
-                <span className="font-medium">{summary.prices.failed}</span>{' '}
-                failed
-              </>
-            )}
-          </div>
+          {summary.prices ? (
+            <div className="text-slate-700">
+              Prices:{' '}
+              <span className="font-medium">{summary.prices.successful}</span>{' '}
+              updated
+              {summary.prices.skipped > 0 && (
+                <>
+                  ,{' '}
+                  <span className="font-medium">{summary.prices.skipped}</span>{' '}
+                  skipped
+                </>
+              )}
+              {summary.prices.failed > 0 && (
+                <>
+                  ,{' '}
+                  <span className="font-medium">{summary.prices.failed}</span>{' '}
+                  failed
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="text-slate-500">Prices: no data returned.</div>
+          )}
 
           {fxFailed && (
             <div className="text-red-700">
-              FX rates: failed — {summary.fx.error ?? 'unknown error'}
+              FX rates: failed — {summary.fx?.error ?? 'unknown error'}
             </div>
           )}
 
           {snapshotFailed && (
             <div className="text-red-700">
-              Snapshot: failed
-              {summary.snapshotError ? ` — ${summary.snapshotError}` : ''}
+              Snapshot: failed — {summary.snapshotError ?? 'unknown error'}
             </div>
           )}
 
@@ -173,6 +201,64 @@ export function RefreshPortfolioButton({ lastRefreshedAt }: Props) {
       )}
     </div>
   )
+}
+
+function isObject(x: unknown): x is Record<string, unknown> {
+  return !!x && typeof x === 'object'
+}
+
+function isPriceResult(x: unknown): x is PriceResult {
+  if (!isObject(x)) return false
+  if (typeof x.id !== 'string' || typeof x.name !== 'string') return false
+  if (x.ticker !== null && typeof x.ticker !== 'string') return false
+  if (
+    x.status !== 'success' &&
+    x.status !== 'skipped' &&
+    x.status !== 'failed'
+  ) {
+    return false
+  }
+  return true
+}
+
+function parseSummary(json: unknown): Summary | null {
+  if (!isObject(json)) return null
+
+  let prices: PriceSummary | null = null
+  const rawPrices = json.prices
+  if (isObject(rawPrices)) {
+    const rawResults = Array.isArray(rawPrices.results) ? rawPrices.results : []
+    const results = rawResults.filter(isPriceResult)
+    prices = {
+      total:
+        typeof rawPrices.total === 'number' ? rawPrices.total : results.length,
+      successful:
+        typeof rawPrices.successful === 'number' ? rawPrices.successful : 0,
+      skipped: typeof rawPrices.skipped === 'number' ? rawPrices.skipped : 0,
+      failed: typeof rawPrices.failed === 'number' ? rawPrices.failed : 0,
+      results,
+    }
+  }
+
+  let fx: FxSummary | null = null
+  const rawFx = json.fx
+  if (isObject(rawFx)) {
+    fx = {
+      ok: !!rawFx.ok,
+      error: typeof rawFx.error === 'string' ? rawFx.error : null,
+    }
+  }
+
+  const snapshotPresent = isObject(json.snapshot)
+  const snapshotError =
+    typeof json.snapshot_error === 'string' ? json.snapshot_error : null
+
+  // If absolutely nothing useful came back, treat the response as invalid.
+  if (!prices && !fx && !snapshotPresent && !snapshotError) {
+    return null
+  }
+
+  return { prices, fx, snapshotPresent, snapshotError }
 }
 
 function formatRelative(iso: string): string {
