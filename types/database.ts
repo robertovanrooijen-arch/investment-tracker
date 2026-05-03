@@ -63,3 +63,15 @@ export type FxRate = {
   fetched_at: string
 }
 
+export type PortfolioSnapshot = {
+  user_id: string
+  date: string                  // 'YYYY-MM-DD'
+  total_value_eur: number
+  total_invested_eur: number
+  total_realized_eur: number
+  total_unrealized_eur: number
+  total_ever_invested_eur: number
+  snapshot_source: string
+  created_at: string
+  updated_at: string
+}

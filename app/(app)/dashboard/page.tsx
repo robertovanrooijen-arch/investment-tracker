@@ -4,8 +4,7 @@ import { PageHeader } from '@/components/ui/page-header'
 import { StatCard } from '@/components/ui/stat-card'
 import { AllocationBreakdown } from '@/components/dashboard/allocation-breakdown'
 import { RecentTransactions } from '@/components/dashboard/recent-transactions'
-import { RefreshFxButton } from '@/components/dashboard/refresh-fx-button'
-import { RefreshAllPricesButton } from '@/components/dashboard/refresh-all-prices-button'
+import { RefreshPortfolioButton } from '@/components/dashboard/refresh-portfolio-button'
 import { money } from '@/lib/format'
 import {
   computePortfolioMetrics,
@@ -27,7 +26,7 @@ type TxWithInvestment = Transaction & {
 export default async function DashboardPage() {
   const supabase = await createClient()
 
-  const [invRes, txRes, recentRes, fxRes] = await Promise.all([
+  const [invRes, txRes, recentRes, fxRes, latestSnapRes] = await Promise.all([
     supabase.from('investments').select('*').returns<Investment[]>(),
     supabase.from('transactions').select('*').returns<Transaction[]>(),
     supabase
@@ -38,13 +37,20 @@ export default async function DashboardPage() {
       .limit(5)
       .returns<TxWithInvestment[]>(),
     loadFxRates(supabase),
+    supabase
+      .from('portfolio_snapshots')
+      .select('updated_at')
+      .order('date', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ])
 
   const investments = invRes.data ?? []
   const transactions = txRes.data ?? []
   const recent = recentRes.data ?? []
   const fxRates = fxRes.rates
-  const fxLastUpdated = fxRes.lastUpdatedAt
+  const latestSnap = latestSnapRes.data as { updated_at: string } | null
+  const lastRefreshedAt = latestSnap?.updated_at ?? null
 
   const metrics = computePortfolioMetrics(investments, transactions, fxRates)
 
@@ -81,8 +87,7 @@ export default async function DashboardPage() {
         />
 
         <div className="flex flex-col items-start gap-2 sm:items-end">
-          <RefreshAllPricesButton />
-          <RefreshFxButton lastUpdatedAt={fxLastUpdated} />
+          <RefreshPortfolioButton lastRefreshedAt={lastRefreshedAt} />
         </div>
       </div>
 
