@@ -7,12 +7,14 @@ type Props = {
   quantityHeld: number
   remainingCostBasis: number
   currentAverageBuyPrice: number | null
+  currency: string
 }
 
 export function WhatIfBuy({
   quantityHeld,
   remainingCostBasis,
   currentAverageBuyPrice,
+  currency,
 }: Props) {
   const [quantity, setQuantity] = useState('')
   const [price, setPrice] = useState('')
@@ -30,7 +32,8 @@ export function WhatIfBuy({
     const buyCost = q * p + feeNum
     const newQuantity = quantityHeld + q
     const newCostBasis = remainingCostBasis + buyCost
-    const newAverageBuyPrice = newQuantity > 0 ? newCostBasis / newQuantity : null
+    const newAverageBuyPrice =
+      newQuantity > 0 ? newCostBasis / newQuantity : null
 
     const delta =
       currentAverageBuyPrice != null && newAverageBuyPrice != null
@@ -44,12 +47,12 @@ export function WhatIfBuy({
     'w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500'
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-6">
+    <section className="rounded-2xl border border-slate-200 bg-white p-6">
       <div>
         <h2 className="text-lg font-semibold text-slate-900">What-if: buy more</h2>
         <p className="mt-1 text-sm text-slate-600">
-          Simulate adding to this position to see the impact on your average buy price.
-          Nothing is saved.
+          Simulate adding to this position to see the impact on your average buy
+          price. Nothing is saved.
         </p>
       </div>
 
@@ -71,7 +74,7 @@ export function WhatIfBuy({
         </div>
         <div>
           <label htmlFor="wif-price" className="mb-1 block text-sm font-medium text-slate-700">
-            Price per unit
+            Price per unit ({currency})
           </label>
           <input
             id="wif-price"
@@ -86,7 +89,7 @@ export function WhatIfBuy({
         </div>
         <div>
           <label htmlFor="wif-fee" className="mb-1 block text-sm font-medium text-slate-700">
-            Fee <span className="text-slate-400">(optional)</span>
+            Fee <span className="text-slate-400">(optional, {currency})</span>
           </label>
           <input
             id="wif-fee"
@@ -104,14 +107,22 @@ export function WhatIfBuy({
       <div className="mt-6 grid gap-3 md:grid-cols-3">
         <Stat
           label="Current avg buy price"
-          value={currentAverageBuyPrice != null ? money(currentAverageBuyPrice) : '—'}
+          value={
+            currentAverageBuyPrice != null
+              ? money(currentAverageBuyPrice, currency)
+              : '—'
+          }
         />
         <Stat
           label="New avg buy price"
-          value={result?.newAverageBuyPrice != null ? money(result.newAverageBuyPrice) : '—'}
+          value={
+            result?.newAverageBuyPrice != null
+              ? money(result.newAverageBuyPrice, currency)
+              : '—'
+          }
           hint={
             result?.delta != null
-              ? `${result.delta >= 0 ? '+' : ''}${money(result.delta)} per unit`
+              ? `${result.delta >= 0 ? '+' : ''}${money(result.delta, currency)} per unit`
               : undefined
           }
           highlight={!!result}
@@ -126,9 +137,13 @@ export function WhatIfBuy({
       {result && (
         <p className="mt-4 text-xs text-slate-500">
           New cost basis:{' '}
-          <span className="font-medium text-slate-700">{money(result.newCostBasis)}</span>{' '}
+          <span className="font-medium text-slate-700">
+            {money(result.newCostBasis, currency)}
+          </span>{' '}
           · this buy adds{' '}
-          <span className="font-medium text-slate-700">{money(result.buyCost)}</span>
+          <span className="font-medium text-slate-700">
+            {money(result.buyCost, currency)}
+          </span>
         </p>
       )}
     </section>
@@ -160,7 +175,6 @@ function Stat({
 }
 
 function formatNumber(n: number) {
-  // Trim trailing zeros for fractional crypto holdings while keeping integers tidy.
   if (Number.isInteger(n)) return String(n)
   return n.toFixed(6).replace(/\.?0+$/, '')
 }

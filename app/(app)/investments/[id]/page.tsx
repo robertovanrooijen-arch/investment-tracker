@@ -4,11 +4,11 @@ import { createClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
 import { StatCard } from '@/components/ui/stat-card'
-import { WhatIfBuy } from '@/components/investments/what-if-buy'
 import { RefreshPriceButton } from '@/components/investments/refresh-price-button'
 import { InvestmentDetailChart } from '@/components/investments/investment-detail-chart'
 import { money, fmtDate } from '@/lib/format'
 import { computeInvestmentMetrics, pct } from '@/lib/domain/calculations'
+import { loadFxRates } from '@/lib/domain/fx'
 import { txTypeBadgeClass } from '@/lib/domain/transaction-helpers'
 import { hasUnits } from '@/lib/domain/constants'
 import type { Investment, Transaction } from '@/types/database'
@@ -21,7 +21,7 @@ export default async function InvestmentDetailPage({
   const { id } = await params
   const supabase = await createClient()
 
-  const [invRes, txRes, snapRes] = await Promise.all([
+  const [invRes, txRes, snapRes, fxRes] = await Promise.all([
     supabase.from('investments').select('*').eq('id', id).single<Investment>(),
     supabase
       .from('transactions')
@@ -35,6 +35,7 @@ export default async function InvestmentDetailPage({
       .select('date, value_eur, remaining_cost_basis_eur, unrealized_profit_eur')
       .eq('investment_id', id)
       .order('date', { ascending: true }),
+    loadFxRates(supabase),
   ])
 
   if (invRes.error || !invRes.data) {
@@ -43,8 +44,14 @@ export default async function InvestmentDetailPage({
 
   const investment = invRes.data
   const transactions = txRes.data ?? []
-  const m = computeInvestmentMetrics(investment, transactions)
+  const fxRates = fxRes.rates
+
+  // Compute twice: EUR for headline stats, native for per-unit displays.
+  const m = computeInvestmentMetrics(investment, transactions, fxRates) // EUR
+  const mNative = computeInvestmentMetrics(investment, transactions)     // native
+
   const currency = investment.currency ?? 'EUR'
+  const isForeign = currency !== 'EUR'
 
   // Postgres `numeric` columns can come back as strings via supabase-js; coerce.
   const snapshots = (snapRes.data ?? []).map((row) => ({
@@ -86,13 +93,21 @@ export default async function InvestmentDetailPage({
             : `${investment.type} · ${investment.platform} · ${currency}`
         }
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {!m.isClosed && (
               <Link
                 href={`/transactions/new?investment=${investment.id}`}
                 className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-900 hover:bg-slate-50"
               >
                 + Record activity
+              </Link>
+            )}
+            {showWhatIfBuy && (
+              <Link
+                href={`/investments/${investment.id}/what-if`}
+                className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-900 hover:bg-slate-50"
+              >
+                What-if buy more →
               </Link>
             )}
             <Link
@@ -122,12 +137,12 @@ export default async function InvestmentDetailPage({
           <StatCard label="Quantity held" value="0" hint="Fully sold" />
           <StatCard
             label="Realized profit / loss"
-            value={money(m.realizedProfit, currency)}
+            value={money(m.realizedProfit, 'EUR')}
             hint={
               m.totalProfitPct !== null
                 ? `${pct(m.totalProfitPct)} on ${money(
                     m.totalEverInvested,
-                    currency
+                    'EUR'
                   )} invested`
                 : undefined
             }
@@ -138,17 +153,27 @@ export default async function InvestmentDetailPage({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <StatCard
             label="Current value"
-            value={money(m.currentValue, currency)}
-            hint={`Native currency: ${currency}`}
+            value={money(m.currentValue, 'EUR')}
+            hint={
+              isForeign
+                ? `≈ ${money(mNative.currentValue, currency)} ${currency}`
+                : undefined
+            }
           />
           <StatCard
             label="Total invested"
-            value={money(m.remainingCostBasis, currency)}
-            hint={isUnit ? 'Cost basis of shares held' : undefined}
+            value={money(m.remainingCostBasis, 'EUR')}
+            hint={
+              isForeign
+                ? `≈ ${money(mNative.remainingCostBasis, currency)} ${currency}`
+                : isUnit
+                  ? 'Cost basis of shares held'
+                  : undefined
+            }
           />
           <StatCard
             label="Profit / loss"
-            value={m.hasActivity ? money(m.totalProfit, currency) : '—'}
+            value={m.hasActivity ? money(m.totalProfit, 'EUR') : '—'}
             hint={
               m.hasActivity && m.totalProfitPct !== null
                 ? pct(m.totalProfitPct)
@@ -157,6 +182,12 @@ export default async function InvestmentDetailPage({
             tone={m.hasActivity ? profitTone : 'neutral'}
           />
         </div>
+      )}
+
+      {isForeign && (
+        <p className="text-xs text-slate-500">
+          EUR values converted using the latest stored FX rate.
+        </p>
       )}
 
       {isUnit && hasSold && (
@@ -178,7 +209,7 @@ export default async function InvestmentDetailPage({
                       : 'text-slate-900'
                 }`}
               >
-                {money(m.realizedProfit, currency)}
+                {money(m.realizedProfit, 'EUR')}
               </p>
             </div>
             <div>
@@ -194,7 +225,7 @@ export default async function InvestmentDetailPage({
                       : 'text-slate-900'
                 }`}
               >
-                {m.isClosed ? '—' : money(m.unrealizedProfit, currency)}
+                {m.isClosed ? '—' : money(m.unrealizedProfit, 'EUR')}
               </p>
             </div>
           </div>
@@ -203,13 +234,16 @@ export default async function InvestmentDetailPage({
 
       {isUnit && !m.isClosed && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500 mb-4">
+            Per-unit (in {currency})
+          </p>
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-sm">
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
                 Quantity held
               </p>
               <p className="mt-1 text-base text-slate-900 tabular-nums">
-                {m.quantity ?? 0}
+                {mNative.quantity ?? 0}
               </p>
             </div>
 
@@ -229,8 +263,8 @@ export default async function InvestmentDetailPage({
                 Avg buy price
               </p>
               <p className="mt-1 text-base text-slate-900 tabular-nums">
-                {m.averageBuyPrice !== null
-                  ? money(m.averageBuyPrice, currency)
+                {mNative.averageBuyPrice !== null
+                  ? money(mNative.averageBuyPrice, currency)
                   : '—'}
               </p>
             </div>
@@ -253,14 +287,6 @@ export default async function InvestmentDetailPage({
             />
           </div>
         </div>
-      )}
-
-      {showWhatIfBuy && (
-        <WhatIfBuy
-          quantityHeld={quantityHeld}
-          remainingCostBasis={m.remainingCostBasis}
-          currentAverageBuyPrice={m.averageBuyPrice}
-        />
       )}
 
       <InvestmentDetailChart snapshots={snapshots} />
