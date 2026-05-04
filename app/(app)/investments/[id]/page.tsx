@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { StatCard } from '@/components/ui/stat-card'
 import { WhatIfBuy } from '@/components/investments/what-if-buy'
 import { RefreshPriceButton } from '@/components/investments/refresh-price-button'
+import { InvestmentDetailChart } from '@/components/investments/investment-detail-chart'
 import { money, fmtDate } from '@/lib/format'
 import { computeInvestmentMetrics, pct } from '@/lib/domain/calculations'
 import { txTypeBadgeClass } from '@/lib/domain/transaction-helpers'
@@ -20,7 +21,7 @@ export default async function InvestmentDetailPage({
   const { id } = await params
   const supabase = await createClient()
 
-  const [invRes, txRes] = await Promise.all([
+  const [invRes, txRes, snapRes] = await Promise.all([
     supabase.from('investments').select('*').eq('id', id).single<Investment>(),
     supabase
       .from('transactions')
@@ -29,6 +30,11 @@ export default async function InvestmentDetailPage({
       .order('date', { ascending: false })
       .order('created_at', { ascending: false })
       .returns<Transaction[]>(),
+    supabase
+      .from('investment_snapshots')
+      .select('date, value_eur, remaining_cost_basis_eur, unrealized_profit_eur')
+      .eq('investment_id', id)
+      .order('date', { ascending: true }),
   ])
 
   if (invRes.error || !invRes.data) {
@@ -39,6 +45,14 @@ export default async function InvestmentDetailPage({
   const transactions = txRes.data ?? []
   const m = computeInvestmentMetrics(investment, transactions)
   const currency = investment.currency ?? 'EUR'
+
+  // Postgres `numeric` columns can come back as strings via supabase-js; coerce.
+  const snapshots = (snapRes.data ?? []).map((row) => ({
+    date: String(row.date),
+    value_eur: Number(row.value_eur),
+    remaining_cost_basis_eur: Number(row.remaining_cost_basis_eur),
+    unrealized_profit_eur: Number(row.unrealized_profit_eur),
+  }))
 
   const profitTone: 'positive' | 'negative' | 'neutral' =
     m.totalProfit > 0
@@ -248,6 +262,8 @@ export default async function InvestmentDetailPage({
           currentAverageBuyPrice={m.averageBuyPrice}
         />
       )}
+
+      <InvestmentDetailChart snapshots={snapshots} />
 
       {investment.notes && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
