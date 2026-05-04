@@ -75,3 +75,18 @@ export type PortfolioSnapshot = {
   created_at: string
   updated_at: string
 }
+export type InvestmentSnapshot = {
+  user_id: string
+  investment_id: string
+  date: string
+  value_eur: number
+  remaining_cost_basis_eur: number
+  realized_profit_eur: number
+  unrealized_profit_eur: number
+  quantity: number | null
+  current_price_native: number | null
+  currency: string
+  snapshot_source: string
+  created_at: string
+  updated_at: string
+}

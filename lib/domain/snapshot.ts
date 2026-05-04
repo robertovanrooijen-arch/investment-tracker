@@ -1,5 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { PortfolioMetrics } from '@/lib/domain/calculations'
+import type {
+  InvestmentMetrics,
+  PortfolioMetrics,
+} from '@/lib/domain/calculations'
 
 export type SnapshotSource = 'manual_refresh' | 'cron'
 
@@ -14,8 +17,14 @@ export type UpsertedSnapshot = {
   updated_at: string
 }
 
+export type InvestmentSnapshotInput = {
+  investmentId: string
+  metrics: InvestmentMetrics // already converted to EUR
+  currentPriceNative: number | null
+  currency: string
+}
+
 function todayLocalIso(): string {
-  // Use local calendar date so the snapshot matches the user's day.
   const d = new Date()
   const yyyy = d.getFullYear()
   const mm = String(d.getMonth() + 1).padStart(2, '0')
@@ -24,9 +33,7 @@ function todayLocalIso(): string {
 }
 
 /**
- * Upsert today's portfolio snapshot for the given user.
- * Multiple calls on the same day overwrite the row, not duplicate it,
- * thanks to the (user_id, date) composite primary key.
+ * Upsert today's portfolio-level snapshot for the given user.
  */
 export async function upsertTodaysSnapshot(
   supabase: SupabaseClient,
@@ -59,4 +66,43 @@ export async function upsertTodaysSnapshot(
 
   if (error) return { snapshot: null, error: error.message }
   return { snapshot: data as UpsertedSnapshot, error: null }
+}
+
+/**
+ * Upsert today's per-investment snapshots for the given user.
+ * Overwrites within the same day, never duplicates, thanks to the
+ * (user_id, investment_id, date) composite primary key.
+ */
+export async function upsertTodaysInvestmentSnapshots(
+  supabase: SupabaseClient,
+  userId: string,
+  inputs: InvestmentSnapshotInput[],
+  source: SnapshotSource = 'manual_refresh'
+): Promise<{ upserted: number; error: string | null }> {
+  if (inputs.length === 0) return { upserted: 0, error: null }
+
+  const date = todayLocalIso()
+  const updatedAt = new Date().toISOString()
+
+  const rows = inputs.map((input) => ({
+    user_id: userId,
+    investment_id: input.investmentId,
+    date,
+    value_eur: input.metrics.currentValue,
+    remaining_cost_basis_eur: input.metrics.remainingCostBasis,
+    realized_profit_eur: input.metrics.realizedProfit,
+    unrealized_profit_eur: input.metrics.unrealizedProfit,
+    quantity: input.metrics.quantity,
+    current_price_native: input.currentPriceNative,
+    currency: input.currency,
+    snapshot_source: source,
+    updated_at: updatedAt,
+  }))
+
+  const { error } = await supabase
+    .from('investment_snapshots')
+    .upsert(rows, { onConflict: 'user_id,investment_id,date' })
+
+  if (error) return { upserted: 0, error: error.message }
+  return { upserted: rows.length, error: null }
 }
