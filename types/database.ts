@@ -5,34 +5,34 @@ export type InvestmentType =
   | 'cash'
   | 'real estate'
   | 'custom'
-  
-  export type Investment = {
-    id: string
-    user_id: string
-    name: string
-    ticker: string | null
-    type: InvestmentType
-    platform: string
-    current_price: number | null
-    current_value: number | null
-    currency: string
-    price_last_updated_at: string | null
-    price_source: string | null
-    notes: string | null
-    created_at: string
-    updated_at: string
-  }
-  
-  export type InvestmentInput = {
-    name: string
-    ticker: string | null
-    type: InvestmentType
-    platform: string
-    current_price: number | null
-    current_value: number | null
-    currency: string
-    notes: string | null
-  }
+
+export type Investment = {
+  id: string
+  user_id: string
+  name: string
+  ticker: string | null
+  type: InvestmentType
+  platform: string
+  current_price: number | null
+  current_value: number | null
+  currency: string
+  price_last_updated_at: string | null
+  price_source: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type InvestmentInput = {
+  name: string
+  ticker: string | null
+  type: InvestmentType
+  platform: string
+  current_price: number | null
+  current_value: number | null
+  currency: string
+  notes: string | null
+}
 
 export type TransactionType =
   | 'buy'
@@ -56,7 +56,17 @@ export type Transaction = {
   currency: string
   price_last_updated_at: string | null
   price_source: string | null
+  // Phase 1 (mixed-currency support):
+  // - For backfilled rows, price_currency and fee_currency equal the
+  //   investment's currency (single-currency assumption preserved).
+  // - For new rows inserted before Phase 2 ships, these are NULL — calculations
+  //   fall back to investment.currency, which is the same behaviour as today.
+  // - fx_rate_to_eur is NULL until Phase 2 starts snapshotting it on save.
+  price_currency: string | null
+  fee_currency: string | null
+  fx_rate_to_eur: number | null
 }
+
 export type FxRate = {
   currency: string
   eur_per_unit: number
@@ -75,6 +85,7 @@ export type PortfolioSnapshot = {
   created_at: string
   updated_at: string
 }
+
 export type InvestmentSnapshot = {
   user_id: string
   investment_id: string
