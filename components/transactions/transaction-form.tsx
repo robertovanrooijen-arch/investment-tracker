@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { Field } from '@/components/ui/field'
 import { Button } from '@/components/ui/button'
 import { money } from '@/lib/format'
+import { SUPPORTED_CURRENCIES } from '@/lib/domain/fx'
 
 const UNIT_TYPES = new Set(['stock', 'ETF', 'crypto'])
 
@@ -25,6 +26,7 @@ export type InvestmentOption = {
   type: string
   quantityHeld: number
   current_value: number | null
+  currency: string
 }
 
 export type TransactionInitial = {
@@ -37,11 +39,17 @@ export type TransactionInitial = {
   amount: number | null
   fee: number | null
   notes: string | null
+  price_currency: string | null
+  fee_currency: string | null
+  fx_rate_to_eur: number | null
 }
+
+type FxRates = Record<string, number>
 
 type Props = {
   investments: InvestmentOption[]
   initial?: TransactionInitial
+  fxRates: FxRates
 }
 
 const UNIT_TX_TYPES: TxType[] = ['buy', 'sell', 'dividend']
@@ -68,7 +76,7 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10)
 }
 
-export function TransactionForm({ investments, initial }: Props) {
+export function TransactionForm({ investments, initial, fxRates }: Props) {
   const router = useRouter()
   const supabase = createClient()
 
@@ -90,6 +98,9 @@ export function TransactionForm({ investments, initial }: Props) {
     initial?.fee != null ? String(initial.fee) : ''
   )
   const [notes, setNotes] = useState<string>(initial?.notes ?? '')
+  const [feeCurrency, setFeeCurrency] = useState<string>(
+    initial?.fee_currency ?? 'EUR'
+  )
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -99,9 +110,13 @@ export function TransactionForm({ investments, initial }: Props) {
     [investments, investmentId]
   )
 
+  // Price currency is locked to the selected investment's native currency.
+  const priceCurrency = selectedInvestment?.currency ?? 'EUR'
+  const priceToEur = fxRates[priceCurrency] ?? 1
+  const feeToEur = fxRates[feeCurrency] ?? 1
+
   const isUnit =
     !!selectedInvestment && UNIT_TYPES.has(selectedInvestment.type)
-
   const allowedTypes: TxType[] = isUnit ? UNIT_TX_TYPES : AMOUNT_TX_TYPES
 
   useEffect(() => {
@@ -118,20 +133,32 @@ export function TransactionForm({ investments, initial }: Props) {
   const showUnits = isUnit && (type === 'buy' || type === 'sell')
   const showAmount = !showUnits
 
-  const computedAmount = useMemo(() => {
+  // Three-line live preview for unit transactions.
+  const totalsPreview = useMemo(() => {
     if (!showUnits) return null
 
     const q = parseFloat(quantity)
     const p = parseFloat(pricePerUnit)
-
     if (!Number.isFinite(q) || !Number.isFinite(p)) return null
 
     const f = parseFloat(fee)
-    const feeNum = Number.isFinite(f) ? f : 0
-    const gross = q * p
+    const feeNum = Number.isFinite(f) && f >= 0 ? f : 0
 
-    return type === 'buy' ? gross + feeNum : gross - feeNum
-  }, [showUnits, quantity, pricePerUnit, fee, type])
+    const assetCost = q * p // in priceCurrency
+    const assetEur = assetCost * priceToEur
+    const feeEur = feeNum * feeToEur
+    const totalEur = type === 'buy' ? assetEur + feeEur : assetEur - feeEur
+
+    return { assetCost, feeAmount: feeNum, totalEur }
+  }, [showUnits, quantity, pricePerUnit, fee, type, priceToEur, feeToEur])
+
+  // Optional EUR equivalent below the Amount input for foreign assets.
+  const amountEurPreview = useMemo(() => {
+    if (!showAmount || priceCurrency === 'EUR') return null
+    const a = parseFloat(amount)
+    if (!Number.isFinite(a) || a <= 0) return null
+    return a * priceToEur
+  }, [showAmount, amount, priceCurrency, priceToEur])
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
@@ -141,7 +168,6 @@ export function TransactionForm({ investments, initial }: Props) {
       setError('Please select an investment.')
       return
     }
-
     if (!date) {
       setError('Please choose a date.')
       return
@@ -162,12 +188,10 @@ export function TransactionForm({ investments, initial }: Props) {
         setError('Quantity must be greater than 0.')
         return
       }
-
       if (!Number.isFinite(finalPrice) || finalPrice < 0) {
         setError('Price per unit must be 0 or higher.')
         return
       }
-
       if (isSell && finalQuantity > availableToSell + 1e-9) {
         setError(
           `You only hold ${availableToSell} ${
@@ -181,11 +205,26 @@ export function TransactionForm({ investments, initial }: Props) {
       finalAmount = type === 'buy' ? gross + feeVal : gross - feeVal
     } else {
       finalAmount = parseFloat(amount)
-
       if (!Number.isFinite(finalAmount) || finalAmount < 0) {
         setError('Amount must be 0 or higher.')
         return
       }
+    }
+
+    // FX snapshot rule:
+    // - On edit, if the user didn't change the price currency, preserve the
+    //   original snapshot so historical accuracy isn't lost.
+    // - Otherwise (new tx, or currency changed), snapshot the current rate.
+    let fxRateToSave: number | null = null
+    if (
+      initial?.fx_rate_to_eur != null &&
+      initial?.price_currency === priceCurrency
+    ) {
+      fxRateToSave = initial.fx_rate_to_eur
+    } else {
+      const live = fxRates[priceCurrency]
+      fxRateToSave =
+        typeof live === 'number' && Number.isFinite(live) ? live : null
     }
 
     setSaving(true)
@@ -211,6 +250,9 @@ export function TransactionForm({ investments, initial }: Props) {
         amount: finalAmount,
         fee: feeVal || null,
         notes: notes.trim() || null,
+        price_currency: priceCurrency,
+        fee_currency: feeCurrency,
+        fx_rate_to_eur: fxRateToSave,
       }
 
       const { error: dbError } = initial
@@ -284,7 +326,7 @@ export function TransactionForm({ investments, initial }: Props) {
           >
             {investments.map((inv) => (
               <option key={inv.id} value={inv.id}>
-                {inv.name}
+                {inv.name} ({inv.currency})
               </option>
             ))}
           </select>
@@ -316,17 +358,32 @@ export function TransactionForm({ investments, initial }: Props) {
         </Field>
 
         <Field label="Fee" htmlFor="fee">
-          <input
-            id="fee"
-            type="number"
-            step="any"
-            min="0"
-            className={inputClass}
-            value={fee}
-            onChange={(e) => setFee(e.target.value)}
-            placeholder="0.00"
-          />
-        </Field>
+  <div className="flex gap-2">
+    <input
+      id="fee"
+      type="number"
+      step="any"
+      min="0"
+      className={`${inputClass} flex-1 min-w-0`}
+      value={fee}
+      onChange={(e) => setFee(e.target.value)}
+      placeholder="0.00"
+    />
+    <select
+      aria-label="Fee currency"
+      className="w-[110px] shrink-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+      value={feeCurrency}
+      onChange={(e) => setFeeCurrency(e.target.value)}
+    >
+      {SUPPORTED_CURRENCIES.map((c) => (
+        <option key={c} value={c}>
+          {c}
+        </option>
+      ))}
+    </select>
+  </div>
+  <p className="mt-1 text-xs text-slate-500">Broker fee currency.</p>
+</Field>
 
         {showUnits && (
           <>
@@ -349,7 +406,11 @@ export function TransactionForm({ investments, initial }: Props) {
               )}
             </Field>
 
-            <Field label="Price per unit" htmlFor="price" required>
+            <Field
+              label={`Price per unit (${priceCurrency})`}
+              htmlFor="price"
+              required
+            >
               <input
                 id="price"
                 type="number"
@@ -360,12 +421,18 @@ export function TransactionForm({ investments, initial }: Props) {
                 onChange={(e) => setPricePerUnit(e.target.value)}
                 placeholder="0.00"
               />
+              <p className="mt-1 text-xs text-slate-500">
+              Asset trading currency: {priceCurrency}.              </p>
             </Field>
           </>
         )}
 
         {showAmount && (
-          <Field label="Amount" htmlFor="amount" required>
+          <Field
+            label={`Amount (${priceCurrency})`}
+            htmlFor="amount"
+            required
+          >
             <input
               id="amount"
               type="number"
@@ -376,6 +443,11 @@ export function TransactionForm({ investments, initial }: Props) {
               onChange={(e) => setAmount(e.target.value)}
               placeholder="0.00"
             />
+            {amountEurPreview !== null && (
+              <p className="mt-1 text-xs text-slate-500">
+                ≈ {money(amountEurPreview, 'EUR')}
+              </p>
+            )}
           </Field>
         )}
 
@@ -392,13 +464,29 @@ export function TransactionForm({ investments, initial }: Props) {
         </div>
       </div>
 
-      {showUnits && computedAmount !== null && (
-        <p className="text-sm text-slate-600">
-          Total {type === 'buy' ? 'cost' : 'proceeds'}:{' '}
-          <span className="font-medium text-slate-900">
-            {money(computedAmount)}
-          </span>
-        </p>
+      {showUnits && totalsPreview && (
+        <div className="space-y-1 rounded-md bg-slate-50 px-4 py-3 text-sm">
+          <div className="flex justify-between text-slate-600">
+            <span>Asset {type === 'buy' ? 'cost' : 'value'}</span>
+            <span className="font-medium text-slate-900 tabular-nums">
+              {money(totalsPreview.assetCost, priceCurrency)}
+            </span>
+          </div>
+          {totalsPreview.feeAmount > 0 && (
+            <div className="flex justify-between text-slate-600">
+              <span>Fee</span>
+              <span className="font-medium text-slate-900 tabular-nums">
+                {money(totalsPreview.feeAmount, feeCurrency)}
+              </span>
+            </div>
+          )}
+          <div className="flex justify-between border-t border-slate-200 pt-2 text-slate-600">
+            <span>≈ Total {type === 'buy' ? 'cash out' : 'cash in'} (EUR)</span>
+            <span className="font-semibold text-slate-900 tabular-nums">
+              {money(totalsPreview.totalEur, 'EUR')}
+            </span>
+          </div>
+        </div>
       )}
 
       {error && (

@@ -7,7 +7,11 @@ import { StatCard } from '@/components/ui/stat-card'
 import { RefreshPriceButton } from '@/components/investments/refresh-price-button'
 import { InvestmentDetailChart } from '@/components/investments/investment-detail-chart'
 import { money, fmtDate } from '@/lib/format'
-import { computeInvestmentMetrics, pct } from '@/lib/domain/calculations'
+import {
+  computeInvestmentMetrics,
+  pct,
+  txAmountInPriceCurrency,
+} from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
 import { txTypeBadgeClass } from '@/lib/domain/transaction-helpers'
 import { hasUnits } from '@/lib/domain/constants'
@@ -46,14 +50,12 @@ export default async function InvestmentDetailPage({
   const transactions = txRes.data ?? []
   const fxRates = fxRes.rates
 
-  // Compute twice: EUR for headline stats, native for per-unit displays.
-  const m = computeInvestmentMetrics(investment, transactions, fxRates) // EUR
-  const mNative = computeInvestmentMetrics(investment, transactions)     // native
+  const m = computeInvestmentMetrics(investment, transactions, fxRates)
+  const mNative = computeInvestmentMetrics(investment, transactions)
 
   const currency = investment.currency ?? 'EUR'
   const isForeign = currency !== 'EUR'
 
-  // Postgres `numeric` columns can come back as strings via supabase-js; coerce.
   const snapshots = (snapRes.data ?? []).map((row) => ({
     date: String(row.date),
     value_eur: Number(row.value_eur),
@@ -334,77 +336,89 @@ export default async function InvestmentDetailPage({
                 </tr>
               </thead>
               <tbody>
-                {transactions.map((tx) => (
-                  <tr
-                    key={tx.id}
-                    className="border-b last:border-b-0 border-slate-100 hover:bg-slate-50"
-                  >
-                    <td className="px-6 py-4 text-sm text-slate-700 whitespace-nowrap">
-                      {fmtDate(tx.date)}
-                    </td>
-                    <td className="px-6 py-4">
-                      <Badge className={txTypeBadgeClass(tx.type)}>
-                        {tx.type}
-                      </Badge>
-                    </td>
-                    <td className="px-6 py-4 text-right text-sm text-slate-700 tabular-nums">
-                      {tx.quantity !== null ? tx.quantity : '—'}
-                    </td>
-                    <td className="px-6 py-4 text-right text-sm text-slate-700 tabular-nums">
-                      {tx.price_per_unit !== null
-                        ? money(tx.price_per_unit, currency)
-                        : '—'}
-                    </td>
-                    <td className="px-6 py-4 text-right text-sm text-slate-900 tabular-nums">
-                      {money(tx.amount, currency)}
-                    </td>
-                    <td className="px-6 py-4 text-right text-sm text-slate-500 tabular-nums">
-                      {tx.fee > 0 ? money(tx.fee, currency) : '—'}
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <Link
-                        href={`/transactions/${tx.id}/edit`}
-                        className="text-sm font-medium text-slate-700 hover:text-slate-900"
-                      >
-                        Edit
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
+                {transactions.map((tx) => {
+                  const priceCcy = tx.price_currency ?? currency
+                  const feeCcy = tx.fee_currency ?? currency
+                  const amountNative = txAmountInPriceCurrency(tx, fxRates)
+
+                  return (
+                    <tr
+                      key={tx.id}
+                      className="border-b last:border-b-0 border-slate-100 hover:bg-slate-50"
+                    >
+                      <td className="px-6 py-4 text-sm text-slate-700 whitespace-nowrap">
+                        {fmtDate(tx.date)}
+                      </td>
+                      <td className="px-6 py-4">
+                        <Badge className={txTypeBadgeClass(tx.type)}>
+                          {tx.type}
+                        </Badge>
+                      </td>
+                      <td className="px-6 py-4 text-right text-sm text-slate-700 tabular-nums">
+                        {tx.quantity !== null ? tx.quantity : '—'}
+                      </td>
+                      <td className="px-6 py-4 text-right text-sm text-slate-700 tabular-nums">
+                        {tx.price_per_unit !== null
+                          ? money(tx.price_per_unit, priceCcy)
+                          : '—'}
+                      </td>
+                      <td className="px-6 py-4 text-right text-sm text-slate-900 tabular-nums">
+                        {money(amountNative, priceCcy)}
+                      </td>
+                      <td className="px-6 py-4 text-right text-sm text-slate-500 tabular-nums">
+                        {tx.fee > 0 ? money(tx.fee, feeCcy) : '—'}
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <Link
+                          href={`/transactions/${tx.id}/edit`}
+                          className="text-sm font-medium text-slate-700 hover:text-slate-900"
+                        >
+                          Edit
+                        </Link>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
 
             <ul className="md:hidden divide-y divide-slate-100">
-              {transactions.map((tx) => (
-                <li key={tx.id}>
-                  <Link
-                    href={`/transactions/${tx.id}/edit`}
-                    className="block px-5 py-4 hover:bg-slate-50"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <Badge className={txTypeBadgeClass(tx.type)}>
-                          {tx.type}
-                        </Badge>
-                        <div className="mt-1 text-xs text-slate-500">
-                          {fmtDate(tx.date)}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-sm text-slate-900 tabular-nums">
-                          {money(tx.amount, currency)}
-                        </div>
-                        {tx.quantity !== null && tx.price_per_unit !== null && (
-                          <div className="text-xs text-slate-500 tabular-nums">
-                            {tx.quantity} ×{' '}
-                            {money(tx.price_per_unit, currency)}
+              {transactions.map((tx) => {
+                const priceCcy = tx.price_currency ?? currency
+                const amountNative = txAmountInPriceCurrency(tx, fxRates)
+
+                return (
+                  <li key={tx.id}>
+                    <Link
+                      href={`/transactions/${tx.id}/edit`}
+                      className="block px-5 py-4 hover:bg-slate-50"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <Badge className={txTypeBadgeClass(tx.type)}>
+                            {tx.type}
+                          </Badge>
+                          <div className="mt-1 text-xs text-slate-500">
+                            {fmtDate(tx.date)}
                           </div>
-                        )}
+                        </div>
+                        <div className="text-right">
+                          <div className="text-sm text-slate-900 tabular-nums">
+                            {money(amountNative, priceCcy)}
+                          </div>
+                          {tx.quantity !== null &&
+                            tx.price_per_unit !== null && (
+                              <div className="text-xs text-slate-500 tabular-nums">
+                                {tx.quantity} ×{' '}
+                                {money(tx.price_per_unit, priceCcy)}
+                              </div>
+                            )}
+                        </div>
                       </div>
-                    </div>
-                  </Link>
-                </li>
-              ))}
+                    </Link>
+                  </li>
+                )
+              })}
             </ul>
           </>
         )}

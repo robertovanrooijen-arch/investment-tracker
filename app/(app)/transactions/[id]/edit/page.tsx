@@ -5,8 +5,8 @@ import {
   type InvestmentOption,
   type TransactionInitial,
 } from '@/components/transactions/transaction-form'
-import { DeleteTransactionButton } from '@/components/transactions/delete-transaction-button'
 import { heldQuantity } from '@/lib/domain/calculations'
+import { loadFxRates } from '@/lib/domain/fx'
 import type { Transaction } from '@/types/database'
 
 export const dynamic = 'force-dynamic'
@@ -22,36 +22,35 @@ export default async function EditTransactionPage({
   const {
     data: { user },
   } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
 
-  if (!user) {
-    redirect('/login')
-  }
-
-  const { data: tx, error: txError } = await supabase
+  const { data: tx } = await supabase
     .from('transactions')
     .select('*')
     .eq('id', id)
     .eq('user_id', user.id)
     .maybeSingle<Transaction>()
 
-  if (txError || !tx) {
-    notFound()
-  }
+  if (!tx) notFound()
 
-  const { data: investmentsData } = await supabase
-    .from('investments')
-    .select('id, name, type, current_value')
-    .eq('user_id', user.id)
-    .order('name', { ascending: true })
+  const [{ data: investmentsData }, { data: txData }, fxRes] =
+    await Promise.all([
+      supabase
+        .from('investments')
+        .select('id, name, type, current_value, currency')
+        .eq('user_id', user.id)
+        .order('name', { ascending: true }),
+      supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', user.id)
+        .returns<Transaction[]>(),
+      loadFxRates(supabase),
+    ])
 
-  const { data: txData } = await supabase
-    .from('transactions')
-    .select('*')
-    .eq('user_id', user.id)
-    .returns<Transaction[]>()
-
-  const allTxs: Transaction[] = txData ?? []
   const investments = investmentsData ?? []
+  const allTxs = txData ?? []
+  const fxRates = fxRes.rates
 
   const options: InvestmentOption[] = investments.map((inv) => ({
     id: inv.id,
@@ -59,36 +58,38 @@ export default async function EditTransactionPage({
     type: inv.type,
     current_value: inv.current_value,
     quantityHeld: heldQuantity(inv.id, allTxs, tx.id),
+    currency: inv.currency ?? 'EUR',
   }))
 
   const initial: TransactionInitial = {
     id: tx.id,
     investment_id: tx.investment_id,
-    type: tx.type as TransactionInitial['type'],
+    type: tx.type,
     date: tx.date,
     quantity: tx.quantity,
     price_per_unit: tx.price_per_unit,
     amount: tx.amount,
     fee: tx.fee,
     notes: tx.notes,
+    price_currency: tx.price_currency,
+    fee_currency: tx.fee_currency,
+    fx_rate_to_eur: tx.fx_rate_to_eur,
   }
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-3xl space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-slate-900">
-          Edit activity
-        </h1>
+        <h1 className="text-2xl font-semibold text-slate-900">Edit activity</h1>
         <p className="mt-1 text-sm text-slate-600">
           Update the details of this entry.
         </p>
       </div>
 
-      <TransactionForm investments={options} initial={initial} />
-
-      <div className="pt-2 max-w-2xl">
-        <DeleteTransactionButton transactionId={tx.id} />
-      </div>
+      <TransactionForm
+        investments={options}
+        initial={initial}
+        fxRates={fxRates}
+      />
     </div>
   )
 }
