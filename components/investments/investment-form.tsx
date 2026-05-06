@@ -64,6 +64,10 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
       setError('Ticker is required for stocks, ETFs, and crypto.')
       return
     }
+    if (!platform.trim()) {
+      setError('Platform is required.')
+      return
+    }
 
     setSaving(true)
 
@@ -82,7 +86,7 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
       name: name.trim(),
       ticker: ticker.trim() ? ticker.trim().toUpperCase() : null,
       type,
-      platform,
+      platform: platform.trim(),
       current_price:
         showPrice && currentPrice !== '' ? Number(currentPrice) : null,
       current_value:
@@ -190,19 +194,24 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
         </Field>
 
         <Field label="Platform" htmlFor="platform" required>
-          <select
-            id="platform"
-            className={inputClass}
-            value={platform}
-            onChange={(e) => setPlatform(e.target.value)}
-          >
-            {PLATFORMS.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-        </Field>
+  <input
+    id="platform"
+    list="platform-suggestions"
+    className={inputClass}
+    value={platform}
+    onChange={(e) => setPlatform(e.target.value)}
+    placeholder="e.g. DEGIRO, Trading 212, your own"
+    required
+  />
+  <datalist id="platform-suggestions">
+    {PLATFORMS.map((p) => (
+      <option key={p} value={p} />
+    ))}
+  </datalist>
+  <p className="mt-1 text-xs text-slate-500">
+    Pick from suggestions or type your own.
+  </p>
+</Field>
 
         {showPrice && (
           <Field

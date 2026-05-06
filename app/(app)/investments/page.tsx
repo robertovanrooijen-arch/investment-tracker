@@ -1,9 +1,10 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/page-header'
-import { money, fmtDate } from '@/lib/format'
+import { money } from '@/lib/format'
 import { computeInvestmentMetrics, pct } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
+import { InvestmentRow } from '@/components/investments/investment-row'
 import type { Investment, Transaction } from '@/types/database'
 
 export default async function InvestmentsPage() {
@@ -76,88 +77,12 @@ export default async function InvestmentsPage() {
                 <th className="px-6 py-3 font-medium text-right">Value EUR</th>
                 <th className="px-6 py-3 font-medium text-right">P / L EUR</th>
                 <th className="px-6 py-3 font-medium">Updated</th>
-                <th className="px-6 py-3" />
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ inv, m }) => {
-                const showPL = m.totalEverInvested > 0
-                const plTone =
-                  m.totalProfit > 0
-                    ? 'text-emerald-600'
-                    : m.totalProfit < 0
-                      ? 'text-rose-600'
-                      : 'text-slate-900'
-
-                return (
-                  <tr
-                    key={inv.id}
-                    className="border-b last:border-b-0 border-slate-100 hover:bg-slate-50"
-                  >
-                    <td className="px-6 py-4">
-                      <Link href={`/investments/${inv.id}`} className="block">
-                        <div className="font-medium text-slate-900 flex items-center gap-2">
-                          {inv.name}
-                          {m.isClosed && (
-                            <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
-                              Closed
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="text-xs text-slate-500">
-                          {inv.ticker ? `${inv.ticker} · ` : ''}
-                          {inv.currency ?? 'EUR'}
-                        </div>
-                      </Link>
-                    </td>
-
-                    <td className="px-6 py-4">
-                      <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
-                        {inv.type}
-                      </span>
-                    </td>
-
-                    <td className="px-6 py-4 text-sm text-slate-700">
-                      {inv.platform}
-                    </td>
-
-                    <td className="px-6 py-4 text-right text-sm text-slate-900 tabular-nums">
-                      {money(m.currentValue, 'EUR')}
-                    </td>
-
-                    <td
-                      className={`px-6 py-4 text-right text-sm tabular-nums ${plTone}`}
-                    >
-                      {showPL ? (
-                        <>
-                          <div>{money(m.totalProfit, 'EUR')}</div>
-                          <div className="text-xs">
-                            {m.totalProfitPct !== null
-                              ? pct(m.totalProfitPct)
-                              : '—'}
-                          </div>
-                        </>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </td>
-
-                    <td className="px-6 py-4 text-sm text-slate-500">
-                      {fmtDate(inv.updated_at)}
-                    </td>
-
-                    <td className="px-6 py-4 text-right">
-                      <Link
-                        href={`/investments/${inv.id}`}
-                        className="text-sm font-medium text-slate-700 hover:text-slate-900"
-                      >
-                        View
-                      </Link>
-                    </td>
-                  </tr>
-                )
-              })}
+              {rows.map(({ inv, m }) => (
+                <InvestmentRow key={inv.id} inv={inv} m={m} />
+              ))}
             </tbody>
           </table>
 
