@@ -101,6 +101,9 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
   const [feeCurrency, setFeeCurrency] = useState<string>(
     initial?.fee_currency ?? 'EUR'
   )
+  const [fxRateOverride, setFxRateOverride] = useState<string>(
+    initial?.fx_rate_to_eur != null ? String(initial.fx_rate_to_eur) : ''
+  )
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -110,10 +113,19 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
     [investments, investmentId]
   )
 
-  // Price currency is locked to the selected investment's native currency.
   const priceCurrency = selectedInvestment?.currency ?? 'EUR'
   const priceToEur = fxRates[priceCurrency] ?? 1
   const feeToEur = fxRates[feeCurrency] ?? 1
+
+  // The FX rate the live preview should reflect: user override if present,
+  // otherwise the live rate. Lets the user see the EUR totals update in
+  // real time as they type a manual rate.
+  const effectivePriceToEur = useMemo(() => {
+    const trimmed = fxRateOverride.trim()
+    if (trimmed === '') return priceToEur
+    const parsed = parseFloat(trimmed)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : priceToEur
+  }, [fxRateOverride, priceToEur])
 
   const isUnit =
     !!selectedInvestment && UNIT_TYPES.has(selectedInvestment.type)
@@ -132,8 +144,8 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
 
   const showUnits = isUnit && (type === 'buy' || type === 'sell')
   const showAmount = !showUnits
+  const showFxOverride = priceCurrency !== 'EUR'
 
-  // Three-line live preview for unit transactions.
   const totalsPreview = useMemo(() => {
     if (!showUnits) return null
 
@@ -144,21 +156,20 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
     const f = parseFloat(fee)
     const feeNum = Number.isFinite(f) && f >= 0 ? f : 0
 
-    const assetCost = q * p // in priceCurrency
-    const assetEur = assetCost * priceToEur
+    const assetCost = q * p
+    const assetEur = assetCost * effectivePriceToEur
     const feeEur = feeNum * feeToEur
     const totalEur = type === 'buy' ? assetEur + feeEur : assetEur - feeEur
 
     return { assetCost, feeAmount: feeNum, totalEur }
-  }, [showUnits, quantity, pricePerUnit, fee, type, priceToEur, feeToEur])
+  }, [showUnits, quantity, pricePerUnit, fee, type, effectivePriceToEur, feeToEur])
 
-  // Optional EUR equivalent below the Amount input for foreign assets.
   const amountEurPreview = useMemo(() => {
     if (!showAmount || priceCurrency === 'EUR') return null
     const a = parseFloat(amount)
     if (!Number.isFinite(a) || a <= 0) return null
-    return a * priceToEur
-  }, [showAmount, amount, priceCurrency, priceToEur])
+    return a * effectivePriceToEur
+  }, [showAmount, amount, priceCurrency, effectivePriceToEur])
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
@@ -173,8 +184,9 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
       return
     }
 
+    // Fee: 0 is a valid value (commission-free trade). Empty/invalid → 0.
     const feeNum = parseFloat(fee)
-    const feeVal = Number.isFinite(feeNum) ? feeNum : 0
+    const feeVal = Number.isFinite(feeNum) && feeNum >= 0 ? feeNum : 0
 
     let finalQuantity: number | null = null
     let finalPrice: number | null = null
@@ -211,16 +223,18 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
       }
     }
 
-    // FX snapshot rule:
-    // - On edit, if the user didn't change the price currency, preserve the
-    //   original snapshot so historical accuracy isn't lost.
-    // - Otherwise (new tx, or currency changed), snapshot the current rate.
+    // FX rate to save:
+    // - If the user typed an override, validate it and use it.
+    // - If empty, use the current live rate (or null if unsupported currency).
     let fxRateToSave: number | null = null
-    if (
-      initial?.fx_rate_to_eur != null &&
-      initial?.price_currency === priceCurrency
-    ) {
-      fxRateToSave = initial.fx_rate_to_eur
+    const overrideStr = fxRateOverride.trim()
+    if (overrideStr !== '') {
+      const parsed = parseFloat(overrideStr)
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setError('FX rate must be a positive number.')
+        return
+      }
+      fxRateToSave = parsed
     } else {
       const live = fxRates[priceCurrency]
       fxRateToSave =
@@ -248,7 +262,7 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
         quantity: finalQuantity,
         price_per_unit: finalPrice,
         amount: finalAmount,
-        fee: feeVal || null,
+        fee: feeVal,
         notes: notes.trim() || null,
         price_currency: priceCurrency,
         fee_currency: feeCurrency,
@@ -358,32 +372,34 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
         </Field>
 
         <Field label="Fee" htmlFor="fee">
-  <div className="flex gap-2">
-    <input
-      id="fee"
-      type="number"
-      step="any"
-      min="0"
-      className={`${inputClass} flex-1 min-w-0`}
-      value={fee}
-      onChange={(e) => setFee(e.target.value)}
-      placeholder="0.00"
-    />
-    <select
-      aria-label="Fee currency"
-      className="w-[110px] shrink-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-      value={feeCurrency}
-      onChange={(e) => setFeeCurrency(e.target.value)}
-    >
-      {SUPPORTED_CURRENCIES.map((c) => (
-        <option key={c} value={c}>
-          {c}
-        </option>
-      ))}
-    </select>
-  </div>
-  <p className="mt-1 text-xs text-slate-500">Broker fee currency.</p>
-</Field>
+          <div className="flex gap-2">
+            <input
+              id="fee"
+              type="number"
+              step="any"
+              min="0"
+              className={`${inputClass} flex-1 min-w-0`}
+              value={fee}
+              onChange={(e) => setFee(e.target.value)}
+              placeholder="0.00"
+            />
+            <select
+              aria-label="Fee currency"
+              className="w-[110px] shrink-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              value={feeCurrency}
+              onChange={(e) => setFeeCurrency(e.target.value)}
+            >
+              {SUPPORTED_CURRENCIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">
+            Broker fee currency. 0 is allowed for commission-free trades.
+          </p>
+        </Field>
 
         {showUnits && (
           <>
@@ -422,17 +438,14 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
                 placeholder="0.00"
               />
               <p className="mt-1 text-xs text-slate-500">
-              Asset trading currency: {priceCurrency}.              </p>
+                Asset trading currency: {priceCurrency}.
+              </p>
             </Field>
           </>
         )}
 
         {showAmount && (
-          <Field
-            label={`Amount (${priceCurrency})`}
-            htmlFor="amount"
-            required
-          >
+          <Field label={`Amount (${priceCurrency})`} htmlFor="amount" required>
             <input
               id="amount"
               type="number"
@@ -449,6 +462,31 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
               </p>
             )}
           </Field>
+        )}
+
+        {showFxOverride && (
+          <div className="md:col-span-2">
+            <Field
+              label={`FX rate (${priceCurrency} → EUR)`}
+              htmlFor="fxrate"
+            >
+              <input
+                id="fxrate"
+                type="number"
+                step="any"
+                min="0"
+                className={inputClass}
+                value={fxRateOverride}
+                onChange={(e) => setFxRateOverride(e.target.value)}
+                placeholder={priceToEur ? priceToEur.toFixed(4) : '0.0000'}
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                Leave empty to use the current rate ({priceToEur.toFixed(4)}).
+                Override with the rate from your broker&apos;s confirmation
+                for exact accuracy.
+              </p>
+            </Field>
+          </div>
         )}
 
         <div className="md:col-span-2">
