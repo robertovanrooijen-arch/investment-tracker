@@ -70,9 +70,9 @@ export default async function InvestmentDetailPage({
         ? 'negative'
         : 'neutral'
 
-  const isUnit = hasUnits(investment.type)
-  const hasSold = m.realizedProfit !== 0
-  const quantityHeld = m.quantity ?? 0
+        const isUnit = hasUnits(investment.type)
+        const hasRealized = m.realizedProfit !== 0
+        const quantityHeld = m.quantity ?? 0
   const showWhatIfBuy = isUnit && quantityHeld > 0
   const statusLabel = m.isClosed ? 'Closed position' : 'Open position'
 
@@ -192,7 +192,7 @@ export default async function InvestmentDetailPage({
         </p>
       )}
 
-      {isUnit && hasSold && (
+{hasRealized && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
           <h2 className="text-base font-semibold text-slate-900">
             Profit breakdown
@@ -200,7 +200,9 @@ export default async function InvestmentDetailPage({
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
-                Realized (from sells)
+                {isUnit
+                  ? 'Realized (from sells)'
+                  : 'Realized (from interest / fees)'}
               </p>
               <p
                 className={`mt-1 text-lg font-medium tabular-nums ${
@@ -216,7 +218,7 @@ export default async function InvestmentDetailPage({
             </div>
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
-                Unrealized (on remaining)
+                {isUnit ? 'Unrealized (on remaining)' : 'Unrealized'}
               </p>
               <p
                 className={`mt-1 text-lg font-medium tabular-nums ${

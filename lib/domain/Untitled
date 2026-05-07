@@ -1,0 +1,2 @@
+export function txTypeBadgeClass(type: TransactionType): string {
+  switch (type) {

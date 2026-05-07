@@ -37,8 +37,11 @@ export type InvestmentInput = {
 export type TransactionType =
   | 'buy'
   | 'sell'
+  | 'dividend'
   | 'deposit'
   | 'withdraw'
+  | 'interest'
+  | 'fee'
   | 'value update'
 
 export type Transaction = {

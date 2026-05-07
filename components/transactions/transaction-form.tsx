@@ -299,6 +299,47 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
           .eq('id', investmentId)
       }
 
+      // Auto-update current_value for interest / fee transactions so the cash
+      // balance follows the activity log automatically.
+      //   - Insert: add full delta (+amount for interest, −amount for fee).
+      //   - Edit on same investment + same type: apply the amount delta.
+      //   - Edit that changes investment or type: skipped — too easy to
+      //     get wrong. User can correct with a 'value update' tx.
+      const isCashFlow = (t: TxType) => t === 'interest' || t === 'fee'
+      const cashSign = (t: TxType) =>
+        t === 'interest' ? 1 : t === 'fee' ? -1 : 0
+
+      let valueDelta = 0
+      if (!initial && isCashFlow(type) && finalAmount != null) {
+        valueDelta = cashSign(type) * finalAmount
+      } else if (
+        initial &&
+        initial.investment_id === investmentId &&
+        initial.type === type &&
+        isCashFlow(type) &&
+        finalAmount != null
+      ) {
+        const oldAmount = initial.amount ?? 0
+        valueDelta = cashSign(type) * (finalAmount - oldAmount)
+      }
+
+      if (valueDelta !== 0) {
+        const { data: invRow } = await supabase
+          .from('investments')
+          .select('current_value')
+          .eq('id', investmentId)
+          .single()
+
+        if (invRow) {
+          await supabase
+            .from('investments')
+            .update({
+              current_value: (invRow.current_value ?? 0) + valueDelta,
+            })
+            .eq('id', investmentId)
+        }
+      }
+
       router.push('/transactions')
       router.refresh()
     } catch (err) {

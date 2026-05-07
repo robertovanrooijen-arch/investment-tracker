@@ -218,73 +218,94 @@ export function computeInvestmentMetrics(
     }
   }
 
-  // Non-unit types: cash / real estate / custom
-  let investedNative = 0
-  let investedEur = 0
-  let totalEverInvestedNative = 0
-  let totalEverInvestedEur = 0
+ // Non-unit types: cash / real estate / custom
+ let investedNative = 0
+ let investedEur = 0
+ let realizedNative = 0
+ let realizedEur = 0
+ let totalEverInvestedNative = 0
+ let totalEverInvestedEur = 0
 
-  for (const tx of txs) {
-    if (tx.type === 'deposit') {
-      const amtNative = (tx.amount ?? 0) + txFeeInPriceCurrency(tx, fxRates)
-      const amtEur =
-        txNativeToEur(tx.amount ?? 0, tx, fxRates) + txFeeInEur(tx, fxRates)
-      investedNative += amtNative
-      investedEur += amtEur
-      totalEverInvestedNative += amtNative
-      totalEverInvestedEur += amtEur
-    } else if (tx.type === 'withdraw') {
-      const amtNative = (tx.amount ?? 0) - txFeeInPriceCurrency(tx, fxRates)
-      const amtEur =
-        txNativeToEur(tx.amount ?? 0, tx, fxRates) - txFeeInEur(tx, fxRates)
-      investedNative -= amtNative
-      investedEur -= amtEur
-    }
-  }
+ for (const tx of txs) {
+   if (tx.type === 'deposit') {
+     const amtNative = (tx.amount ?? 0) + txFeeInPriceCurrency(tx, fxRates)
+     const amtEur =
+       txNativeToEur(tx.amount ?? 0, tx, fxRates) + txFeeInEur(tx, fxRates)
+     investedNative += amtNative
+     investedEur += amtEur
+     totalEverInvestedNative += amtNative
+     totalEverInvestedEur += amtEur
+   } else if (tx.type === 'withdraw') {
+     const amtNative = (tx.amount ?? 0) - txFeeInPriceCurrency(tx, fxRates)
+     const amtEur =
+       txNativeToEur(tx.amount ?? 0, tx, fxRates) - txFeeInEur(tx, fxRates)
+     investedNative -= amtNative
+     investedEur -= amtEur
+   } else if (tx.type === 'interest') {
+     // Interest is realized income; doesn't change cost basis.
+     const amtNative = tx.amount ?? 0
+     const amtEur = txNativeToEur(amtNative, tx, fxRates)
+     realizedNative += amtNative
+     realizedEur += amtEur
+   } else if (tx.type === 'fee') {
+     // Fee transactions reduce realized profit; don't change cost basis.
+     const amtNative = tx.amount ?? 0
+     const amtEur = txNativeToEur(amtNative, tx, fxRates)
+     realizedNative -= amtNative
+     realizedEur -= amtEur
+   }
+ }
 
-  const currentValueNative = investment.current_value ?? 0
-  const currentRateToEur = fxRates?.[priceCurrency] ?? 1
-  const currentValueEur = currentValueNative * currentRateToEur
+ const currentValueNative = investment.current_value ?? 0
+ const currentRateToEur = fxRates?.[priceCurrency] ?? 1
+ const currentValueEur = currentValueNative * currentRateToEur
 
-  const unrealizedNative = currentValueNative - investedNative
-  const unrealizedEur = currentValueEur - investedEur
+ // Unrealized = the gap between actual current value and what we've already
+ // accounted for via cost basis + realized income. Subtracting realized
+ // prevents double-counting interest that was auto-added to current_value.
+ const unrealizedNative =
+   currentValueNative - investedNative - realizedNative
+ const unrealizedEur = currentValueEur - investedEur - realizedEur
 
-  const totalProfitPctNative =
-    totalEverInvestedNative > 0
-      ? unrealizedNative / totalEverInvestedNative
-      : null
-  const totalProfitPctEur =
-    totalEverInvestedEur > 0 ? unrealizedEur / totalEverInvestedEur : null
+ const totalProfitNative = realizedNative + unrealizedNative
+ const totalProfitEur = realizedEur + unrealizedEur
 
-  if (wantEur) {
-    return {
-      quantity: null,
-      currentValue: currentValueEur,
-      remainingCostBasis: investedEur,
-      realizedProfit: 0,
-      unrealizedProfit: unrealizedEur,
-      totalProfit: unrealizedEur,
-      totalEverInvested: totalEverInvestedEur,
-      totalProfitPct: totalProfitPctEur,
-      isClosed: false,
-      hasActivity,
-      averageBuyPrice: null,
-    }
-  }
+ const totalProfitPctNative =
+   totalEverInvestedNative > 0
+     ? totalProfitNative / totalEverInvestedNative
+     : null
+ const totalProfitPctEur =
+   totalEverInvestedEur > 0 ? totalProfitEur / totalEverInvestedEur : null
 
-  return {
-    quantity: null,
-    currentValue: currentValueNative,
-    remainingCostBasis: investedNative,
-    realizedProfit: 0,
-    unrealizedProfit: unrealizedNative,
-    totalProfit: unrealizedNative,
-    totalEverInvested: totalEverInvestedNative,
-    totalProfitPct: totalProfitPctNative,
-    isClosed: false,
-    hasActivity,
-    averageBuyPrice: null,
-  }
+ if (wantEur) {
+   return {
+     quantity: null,
+     currentValue: currentValueEur,
+     remainingCostBasis: investedEur,
+     realizedProfit: realizedEur,
+     unrealizedProfit: unrealizedEur,
+     totalProfit: totalProfitEur,
+     totalEverInvested: totalEverInvestedEur,
+     totalProfitPct: totalProfitPctEur,
+     isClosed: false,
+     hasActivity,
+     averageBuyPrice: null,
+   }
+ }
+
+ return {
+   quantity: null,
+   currentValue: currentValueNative,
+   remainingCostBasis: investedNative,
+   realizedProfit: realizedNative,
+   unrealizedProfit: unrealizedNative,
+   totalProfit: totalProfitNative,
+   totalEverInvested: totalEverInvestedNative,
+   totalProfitPct: totalProfitPctNative,
+   isClosed: false,
+   hasActivity,
+   averageBuyPrice: null,
+ }
 }
 
 // ---------- Portfolio-wide metrics ----------
