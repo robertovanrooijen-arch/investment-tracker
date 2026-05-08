@@ -72,6 +72,27 @@ const TX_LABELS: Record<TxType, string> = {
   'value update': 'Value update',
 }
 
+const AMOUNT_FIELD_LABELS: Record<TxType, string> = {
+  buy: 'Amount',
+  sell: 'Amount',
+  dividend: 'Dividend amount',
+  deposit: 'Deposit amount',
+  withdraw: 'Withdrawal amount',
+  interest: 'Interest amount',
+  fee: 'Fee amount',
+  'value update': 'New value',
+}
+
+// Sign that determines how a transaction affects the cash balance.
+//   +1 → cash arrives (current_value goes up)
+//   -1 → cash leaves (current_value goes down)
+//    0 → no automatic effect on current_value
+function cashSign(t: TxType): 1 | -1 | 0 {
+  if (t === 'deposit' || t === 'interest') return 1
+  if (t === 'withdraw' || t === 'fee') return -1
+  return 0
+}
+
 function todayISO() {
   return new Date().toISOString().slice(0, 10)
 }
@@ -117,9 +138,6 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
   const priceToEur = fxRates[priceCurrency] ?? 1
   const feeToEur = fxRates[feeCurrency] ?? 1
 
-  // The FX rate the live preview should reflect: user override if present,
-  // otherwise the live rate. Lets the user see the EUR totals update in
-  // real time as they type a manual rate.
   const effectivePriceToEur = useMemo(() => {
     const trimmed = fxRateOverride.trim()
     if (trimmed === '') return priceToEur
@@ -140,11 +158,13 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
   }, [investmentId])
 
   const isSell = type === 'sell'
+  const isFeeTransaction = type === 'fee'
   const availableToSell = selectedInvestment?.quantityHeld ?? 0
 
   const showUnits = isUnit && (type === 'buy' || type === 'sell')
   const showAmount = !showUnits
   const showFxOverride = priceCurrency !== 'EUR'
+  const showBrokerFeeField = !isFeeTransaction // hidden when the tx itself is a fee
 
   const totalsPreview = useMemo(() => {
     if (!showUnits) return null
@@ -184,9 +204,14 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
       return
     }
 
-    // Fee: 0 is a valid value (commission-free trade). Empty/invalid → 0.
+    // Broker fee: 0 is valid. For 'fee' tx type, force broker fee to 0
+    // (the tx amount IS the fee — no separate broker fee).
     const feeNum = parseFloat(fee)
-    const feeVal = Number.isFinite(feeNum) && feeNum >= 0 ? feeNum : 0
+    const feeVal = isFeeTransaction
+      ? 0
+      : Number.isFinite(feeNum) && feeNum >= 0
+        ? feeNum
+        : 0
 
     let finalQuantity: number | null = null
     let finalPrice: number | null = null
@@ -223,9 +248,6 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
       }
     }
 
-    // FX rate to save:
-    // - If the user typed an override, validate it and use it.
-    // - If empty, use the current live rate (or null if unsupported currency).
     let fxRateToSave: number | null = null
     const overrideStr = fxRateOverride.trim()
     if (overrideStr !== '') {
@@ -285,6 +307,7 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
         return
       }
 
+      // 1. Sync current_price for unit-asset buys/sells.
       if (showUnits && finalPrice != null && finalPrice > 0) {
         await supabase
           .from('investments')
@@ -292,6 +315,7 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
           .eq('id', investmentId)
       }
 
+      // 2. 'value update' tx sets current_value to a specific value.
       if (type === 'value update' && finalAmount !== null) {
         await supabase
           .from('investments')
@@ -299,28 +323,25 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
           .eq('id', investmentId)
       }
 
-      // Auto-update current_value for interest / fee transactions so the cash
-      // balance follows the activity log automatically.
-      //   - Insert: add full delta (+amount for interest, −amount for fee).
-      //   - Edit on same investment + same type: apply the amount delta.
-      //   - Edit that changes investment or type: skipped — too easy to
-      //     get wrong. User can correct with a 'value update' tx.
-      const isCashFlow = (t: TxType) => t === 'interest' || t === 'fee'
-      const cashSign = (t: TxType) =>
-        t === 'interest' ? 1 : t === 'fee' ? -1 : 0
-
+      // 3. Cash-flow auto-update of current_value.
+      //    deposit / interest → +amount
+      //    withdraw / fee     → -amount
+      //
+      //    On insert: apply the full delta.
+      //    On edit (same investment): reverse the old impact, apply the new.
+      //    On edit that changed investment: skipped — too easy to misalign
+      //    two investments. User can correct with a 'value update' tx.
       let valueDelta = 0
-      if (!initial && isCashFlow(type) && finalAmount != null) {
+      if (!initial && cashSign(type) !== 0 && finalAmount != null) {
         valueDelta = cashSign(type) * finalAmount
       } else if (
         initial &&
         initial.investment_id === investmentId &&
-        initial.type === type &&
-        isCashFlow(type) &&
         finalAmount != null
       ) {
-        const oldAmount = initial.amount ?? 0
-        valueDelta = cashSign(type) * (finalAmount - oldAmount)
+        const oldImpact = cashSign(initial.type) * (initial.amount ?? 0)
+        const newImpact = cashSign(type) * finalAmount
+        valueDelta = newImpact - oldImpact
       }
 
       if (valueDelta !== 0) {
@@ -412,35 +433,37 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
           />
         </Field>
 
-        <Field label="Fee" htmlFor="fee">
-          <div className="flex gap-2">
-            <input
-              id="fee"
-              type="number"
-              step="any"
-              min="0"
-              className={`${inputClass} flex-1 min-w-0`}
-              value={fee}
-              onChange={(e) => setFee(e.target.value)}
-              placeholder="0.00"
-            />
-            <select
-              aria-label="Fee currency"
-              className="w-[110px] shrink-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              value={feeCurrency}
-              onChange={(e) => setFeeCurrency(e.target.value)}
-            >
-              {SUPPORTED_CURRENCIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-          <p className="mt-1 text-xs text-slate-500">
-            Broker fee currency. 0 is allowed for commission-free trades.
-          </p>
-        </Field>
+        {showBrokerFeeField && (
+          <Field label="Fee" htmlFor="fee">
+            <div className="flex gap-2">
+              <input
+                id="fee"
+                type="number"
+                step="any"
+                min="0"
+                className={`${inputClass} flex-1 min-w-0`}
+                value={fee}
+                onChange={(e) => setFee(e.target.value)}
+                placeholder="0.00"
+              />
+              <select
+                aria-label="Fee currency"
+                className="w-[110px] shrink-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                value={feeCurrency}
+                onChange={(e) => setFeeCurrency(e.target.value)}
+              >
+                {SUPPORTED_CURRENCIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Broker fee currency. 0 is allowed for commission-free trades.
+            </p>
+          </Field>
+        )}
 
         {showUnits && (
           <>
@@ -486,7 +509,11 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
         )}
 
         {showAmount && (
-          <Field label={`Amount (${priceCurrency})`} htmlFor="amount" required>
+          <Field
+            label={`${AMOUNT_FIELD_LABELS[type]} (${priceCurrency})`}
+            htmlFor="amount"
+            required
+          >
             <input
               id="amount"
               type="number"
