@@ -5,6 +5,18 @@ export type InvestmentType =
   | 'cash'
   | 'real estate'
   | 'custom'
+  | 'commodity'
+
+// Commodity (bullion) sub-classification.
+// Only meaningful when Investment.type === 'commodity'.
+export type CommodityKind = 'gold' | 'silver'
+
+// Unit in which the user is tracking commodity quantity.
+// Yahoo metal feeds return price per troy ounce; if quantity_unit is 'gram',
+// the price must be converted (divide by GRAMS_PER_TROY_OUNCE) before storing
+// as current_price. This conversion is NOT done in this step — refresh logic
+// is unchanged for now.
+export type QuantityUnit = 'gram' | 'troy_ounce'
 
 export type Investment = {
   id: string
@@ -21,6 +33,12 @@ export type Investment = {
   notes: string | null
   created_at: string
   updated_at: string
+  // Commodity support (Step 1):
+  // - Both fields are NULL for non-commodity rows.
+  // - For type === 'commodity', both MUST be set (enforced by DB constraint).
+  // - Forms / refresh / calculations are not yet wired up; these are storage only.
+  commodity_kind: CommodityKind | null
+  quantity_unit: QuantityUnit | null
 }
 
 export type InvestmentInput = {
@@ -32,6 +50,9 @@ export type InvestmentInput = {
   current_value: number | null
   currency: string
   notes: string | null
+  // Commodity support (Step 1): nullable on input, validated server-side later.
+  commodity_kind: CommodityKind | null
+  quantity_unit: QuantityUnit | null
 }
 
 export type TransactionType =

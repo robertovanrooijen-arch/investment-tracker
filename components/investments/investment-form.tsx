@@ -93,6 +93,8 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
         showValue && currentValue !== '' ? Number(currentValue) : null,
       currency: currency.trim() || 'EUR',
       notes: notes.trim() ? notes.trim() : null,
+      commodity_kind: null,
+      quantity_unit: null,
     }
 
     if (isEdit && initial) {
