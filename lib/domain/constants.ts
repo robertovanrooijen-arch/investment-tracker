@@ -38,27 +38,10 @@ export const QUANTITY_UNITS: QuantityUnit[] = ['gram', 'troy_ounce']
 // as current_price. (Not used yet — refresh logic is unchanged in Step 1.)
 export const GRAMS_PER_TROY_OUNCE = 31.1034768
 
-// Default Yahoo tickers for spot bullion.
-//
-// Why these: physical bullion in Europe should track SPOT, not COMEX futures.
-//   - GC=F / SI=F are COMEX futures in USD per troy ounce — kept as optional
-//     manual fallback tickers, NOT defaults.
-//   - XAU* / XAG* are spot quotes in the chosen currency per troy ounce.
-//
-// Sanity check: gold per gram should be roughly €100–€150/g (not €2–€4/g).
-// If you see €2–€4/g you're almost certainly using a futures ticker without
-// the troy-ounce → gram conversion.
-export const DEFAULT_COMMODITY_TICKERS: Record<
-  CommodityKind,
-  Record<'EUR' | 'USD', string>
-> = {
-  gold: { EUR: 'XAUEUR=X', USD: 'XAUUSD=X' },
-  silver: { EUR: 'XAGEUR=X', USD: 'XAGUSD=X' },
-}
-
-// Optional manual fallback tickers (COMEX futures, USD/oz).
-// Not used as defaults; exposed so a future form can offer them.
-export const FALLBACK_COMMODITY_TICKERS: Record<CommodityKind, string> = {
+// Default Yahoo Finance tickers for bullion (COMEX futures, USD/troy oz).
+// GC=F and SI=F are the tickers that work in Yahoo's API.
+// The XAU*/XAG* spot tickers (e.g. XAUEUR=X) return 404 from Yahoo.
+export const DEFAULT_COMMODITY_TICKERS: Record<CommodityKind, string> = {
   gold: 'GC=F',
   silver: 'SI=F',
 }

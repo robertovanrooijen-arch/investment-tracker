@@ -31,13 +31,10 @@ const inputClass =
 
 // All default commodity tickers — used to detect whether the ticker was
 // auto-set, so we can replace it when the user changes metal or currency.
-const DEFAULT_COMMODITY_TICKER_SET = new Set(
-  Object.values(DEFAULT_COMMODITY_TICKERS).flatMap((m) => Object.values(m))
-)
+const DEFAULT_COMMODITY_TICKER_SET = new Set(Object.values(DEFAULT_COMMODITY_TICKERS))
 
-function getDefaultCommodityTicker(kind: CommodityKind, curr: string): string {
-  const byCurr = DEFAULT_COMMODITY_TICKERS[kind]
-  return (byCurr as Record<string, string>)[curr] ?? byCurr.USD
+function getDefaultCommodityTicker(kind: CommodityKind): string {
+  return DEFAULT_COMMODITY_TICKERS[kind]
 }
 
 export function InvestmentForm({ initial }: InvestmentFormProps) {
@@ -86,27 +83,25 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
   function handleTypeChange(newType: InvestmentType) {
     setType(newType)
     if (newType === 'commodity') {
-      // Auto-suggest ticker when switching to commodity, unless the user has
-      // already set a custom (non-commodity-default) ticker.
       if (!ticker || DEFAULT_COMMODITY_TICKER_SET.has(ticker)) {
-        setTicker(getDefaultCommodityTicker(commodityKind, currency))
+        setTicker(getDefaultCommodityTicker(commodityKind))
+      }
+      // GC=F / SI=F are USD instruments — default to USD when switching in.
+      if (!isCommodity) {
+        setCurrency('USD')
       }
     }
   }
 
   function handleCommodityKindChange(newKind: CommodityKind) {
     setCommodityKind(newKind)
-    // Keep ticker in sync while it still matches a default commodity ticker.
     if (isCommodity && DEFAULT_COMMODITY_TICKER_SET.has(ticker)) {
-      setTicker(getDefaultCommodityTicker(newKind, currency))
+      setTicker(getDefaultCommodityTicker(newKind))
     }
   }
 
   function handleCurrencyChange(newCurr: string) {
     setCurrency(newCurr)
-    if (isCommodity && DEFAULT_COMMODITY_TICKER_SET.has(ticker)) {
-      setTicker(getDefaultCommodityTicker(commodityKind, newCurr))
-    }
   }
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
@@ -268,10 +263,9 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
           />
           {isCommodity ? (
             <p className="mt-1 text-xs text-slate-500">
-              Suggested:{' '}
-              <code>{getDefaultCommodityTicker(commodityKind, currency)}</code>.
-              You can also enter <code>GC=F</code> / <code>SI=F</code> for
-              COMEX futures manually.
+              Default: <code>{getDefaultCommodityTicker(commodityKind)}</code>{' '}
+              (COMEX futures, USD/troy oz). You can enter any Yahoo Finance
+              ticker manually.
             </p>
           ) : (
             requiresTicker && (
