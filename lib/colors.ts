@@ -7,6 +7,7 @@ export const CATEGORY_COLORS: Record<InvestmentType, string> = {
   cash: 'bg-emerald-500',
   'real estate': 'bg-rose-500',
   custom: 'bg-slate-500',
+  commodity: 'bg-yellow-500',
 }
 
 export const PLATFORM_COLORS: Record<string, string> = {
