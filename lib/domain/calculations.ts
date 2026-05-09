@@ -159,6 +159,11 @@ export function computeInvestmentMetrics(
           costBasisEur -= soldCostEur
           sharesHeld -= sellQty
         }
+      } else if (tx.type === 'fee') {
+        const amtNative = tx.amount ?? 0
+        const amtEur = txNativeToEur(amtNative, tx, fxRates)
+        realizedNative -= amtNative
+        realizedEur -= amtEur
       }
     }
 
