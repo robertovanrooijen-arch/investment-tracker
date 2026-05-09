@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { money } from '@/lib/format'
 import { SUPPORTED_CURRENCIES } from '@/lib/domain/fx'
 
-const UNIT_TYPES = new Set(['stock', 'ETF', 'crypto'])
+const UNIT_TYPES = new Set(['stock', 'ETF', 'crypto', 'commodity'])
 
 type TxType =
   | 'buy'
@@ -27,6 +27,7 @@ export type InvestmentOption = {
   quantityHeld: number
   current_value: number | null
   currency: string
+  quantity_unit?: string | null
 }
 
 export type TransactionInitial = {
@@ -52,6 +53,7 @@ type Props = {
   fxRates: FxRates
 }
 
+const COMMODITY_TX_TYPES: TxType[] = ['buy', 'sell']
 const UNIT_TX_TYPES: TxType[] = ['buy', 'sell', 'dividend']
 const AMOUNT_TX_TYPES: TxType[] = [
   'deposit',
@@ -147,7 +149,14 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
 
   const isUnit =
     !!selectedInvestment && UNIT_TYPES.has(selectedInvestment.type)
-  const allowedTypes: TxType[] = isUnit ? UNIT_TX_TYPES : AMOUNT_TX_TYPES
+  const isCommodity = selectedInvestment?.type === 'commodity'
+  const quantityUnit = selectedInvestment?.quantity_unit ?? null
+  const unitLabel = quantityUnit === 'gram' ? 'g' : quantityUnit === 'troy_ounce' ? 'oz' : ''
+  const allowedTypes: TxType[] = isCommodity
+    ? COMMODITY_TX_TYPES
+    : isUnit
+      ? UNIT_TX_TYPES
+      : AMOUNT_TX_TYPES
 
   useEffect(() => {
     if (!selectedInvestment) return
@@ -230,11 +239,11 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
         return
       }
       if (isSell && finalQuantity > availableToSell + 1e-9) {
-        setError(
-          `You only hold ${availableToSell} ${
-            availableToSell === 1 ? 'unit' : 'units'
-          } — you can't sell ${finalQuantity}.`
-        )
+        const heldLabel =
+          isCommodity && unitLabel
+            ? `${availableToSell} ${unitLabel}`
+            : `${availableToSell} ${availableToSell === 1 ? 'unit' : 'units'}`
+        setError(`You only hold ${heldLabel} — you can't sell ${finalQuantity}.`)
         return
       }
 
@@ -467,7 +476,11 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
 
         {showUnits && (
           <>
-            <Field label="Quantity" htmlFor="quantity" required>
+            <Field
+              label={isCommodity && unitLabel ? `Quantity (${unitLabel})` : 'Quantity'}
+              htmlFor="quantity"
+              required
+            >
               <input
                 id="quantity"
                 type="number"
@@ -481,13 +494,20 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
               />
               {isSell && (
                 <p className="mt-1 text-xs text-slate-500">
-                  Available to sell: {availableToSell}
+                  Available to sell:{' '}
+                  {isCommodity && unitLabel
+                    ? `${availableToSell} ${unitLabel}`
+                    : availableToSell}
                 </p>
               )}
             </Field>
 
             <Field
-              label={`Price per unit (${priceCurrency})`}
+              label={
+                isCommodity
+                  ? `Price per ${quantityUnit === 'gram' ? 'gram' : 'troy ounce'} (${priceCurrency})`
+                  : `Price per unit (${priceCurrency})`
+              }
               htmlFor="price"
               required
             >

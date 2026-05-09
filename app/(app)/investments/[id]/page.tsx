@@ -71,6 +71,13 @@ export default async function InvestmentDetailPage({
         : 'neutral'
 
         const isUnit = hasUnits(investment.type)
+        const isCommodity = investment.type === 'commodity'
+        const commodityUnitLabel = isCommodity
+          ? (investment.quantity_unit === 'gram' ? 'g' : 'oz')
+          : null
+        const commodityUnitFull = isCommodity
+          ? (investment.quantity_unit === 'gram' ? 'gram' : 'troy ounce')
+          : null
         const hasRealized = m.realizedProfit !== 0
         const quantityHeld = m.quantity ?? 0
   const showWhatIfBuy = isUnit && quantityHeld > 0
@@ -248,12 +255,13 @@ export default async function InvestmentDetailPage({
               </p>
               <p className="mt-1 text-base text-slate-900 tabular-nums">
                 {mNative.quantity ?? 0}
+                {commodityUnitLabel ? ` ${commodityUnitLabel}` : ''}
               </p>
             </div>
 
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
-                Current price
+                {commodityUnitFull ? `Current price per ${commodityUnitFull}` : 'Current price'}
               </p>
               <p className="mt-1 text-base text-slate-900 tabular-nums">
                 {investment.current_price !== null
@@ -264,7 +272,7 @@ export default async function InvestmentDetailPage({
 
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
-                Avg buy price
+                {commodityUnitFull ? `Avg buy price per ${commodityUnitFull}` : 'Avg buy price'}
               </p>
               <p className="mt-1 text-base text-slate-900 tabular-nums">
                 {mNative.averageBuyPrice !== null

@@ -37,7 +37,7 @@ export default async function EditTransactionPage({
     await Promise.all([
       supabase
         .from('investments')
-        .select('id, name, type, current_value, currency')
+        .select('id, name, type, current_value, currency, quantity_unit')
         .eq('user_id', user.id)
         .order('name', { ascending: true }),
       supabase
@@ -59,6 +59,7 @@ export default async function EditTransactionPage({
     current_value: inv.current_value,
     quantityHeld: heldQuantity(inv.id, allTxs, tx.id),
     currency: inv.currency ?? 'EUR',
+    quantity_unit: inv.quantity_unit ?? null,
   }))
 
   const initial: TransactionInitial = {
