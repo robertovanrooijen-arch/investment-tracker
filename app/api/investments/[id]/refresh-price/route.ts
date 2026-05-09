@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { fetchYahooPrice } from '@/lib/domain/yahoo-price'
-import { hasUnits } from '@/lib/domain/constants'
+import { hasUnits, GRAMS_PER_TROY_OUNCE } from '@/lib/domain/constants'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -22,7 +22,7 @@ export async function POST(
 
   const { data: investment, error: fetchError } = await supabase
     .from('investments')
-    .select('id, type, ticker, currency')
+    .select('id, type, ticker, currency, quantity_unit')
     .eq('id', id)
     .eq('user_id', user.id)
     .maybeSingle()
@@ -50,7 +50,10 @@ export async function POST(
   let currency: string
   try {
     const result = await fetchYahooPrice(ticker)
-    price = result.price
+    price =
+      investment.type === 'commodity' && investment.quantity_unit === 'gram'
+        ? result.price / GRAMS_PER_TROY_OUNCE
+        : result.price
     currency = result.currency
   } catch (err) {
     return NextResponse.json(

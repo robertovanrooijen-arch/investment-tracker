@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { fetchYahooPrice } from '@/lib/domain/yahoo-price'
-import { hasUnits } from '@/lib/domain/constants'
+import { hasUnits, GRAMS_PER_TROY_OUNCE } from '@/lib/domain/constants'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -29,7 +29,7 @@ export async function POST() {
 
   const { data: investments, error: fetchError } = await supabase
     .from('investments')
-    .select('id, name, type, ticker')
+    .select('id, name, type, ticker, quantity_unit')
     .eq('user_id', user.id)
 
   if (fetchError) {
@@ -42,7 +42,7 @@ export async function POST() {
 
   // Split into "has ticker" vs "no ticker" → skipped.
   const results: RefreshResult[] = []
-  const toFetch: { id: string; name: string; ticker: string }[] = []
+  const toFetch: { id: string; name: string; ticker: string; commodityGram: boolean }[] = []
 
   for (const inv of unitInvestments) {
     const t = inv.ticker?.trim()
@@ -55,7 +55,7 @@ export async function POST() {
         reason: 'No ticker set',
       })
     } else {
-      toFetch.push({ id: inv.id, name: inv.name, ticker: t })
+      toFetch.push({ id: inv.id, name: inv.name, ticker: t, commodityGram: inv.type === 'commodity' && inv.quantity_unit === 'gram' })
     }
   }
 
@@ -64,7 +64,8 @@ export async function POST() {
   // Fire all Yahoo lookups in parallel; one failure doesn't sink the rest.
   const settled = await Promise.allSettled(
     toFetch.map(async (inv) => {
-      const { price, currency } = await fetchYahooPrice(inv.ticker)
+      const { price: rawPrice, currency } = await fetchYahooPrice(inv.ticker)
+      const price = inv.commodityGram ? rawPrice / GRAMS_PER_TROY_OUNCE : rawPrice
 
       const { error: updateError } = await supabase
         .from('investments')

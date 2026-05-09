@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchYahooPrice } from '@/lib/domain/yahoo-price'
-import { hasUnits } from '@/lib/domain/constants'
+import { hasUnits, GRAMS_PER_TROY_OUNCE } from '@/lib/domain/constants'
 import {
   computeInvestmentMetrics,
   computePortfolioMetrics,
@@ -56,7 +56,7 @@ export async function refreshPortfolioForUser(
   // 1. Fetch user investments (used to decide which need price refresh).
   const { data: invList, error: invFetchError } = await supabase
     .from('investments')
-    .select('id, name, type, ticker')
+    .select('id, name, type, ticker, quantity_unit')
     .eq('user_id', userId)
 
   if (invFetchError) {
@@ -64,7 +64,7 @@ export async function refreshPortfolioForUser(
   }
 
   const priceResults: PriceResult[] = []
-  const toFetch: { id: string; name: string; ticker: string }[] = []
+  const toFetch: { id: string; name: string; ticker: string; commodityGram: boolean }[] = []
 
   for (const inv of invList ?? []) {
     if (!hasUnits(inv.type)) continue
@@ -78,14 +78,15 @@ export async function refreshPortfolioForUser(
         reason: 'No ticker set',
       })
     } else {
-      toFetch.push({ id: inv.id, name: inv.name, ticker: t })
+      toFetch.push({ id: inv.id, name: inv.name, ticker: t, commodityGram: inv.type === 'commodity' && inv.quantity_unit === 'gram' })
     }
   }
 
   // 2. Fetch prices in parallel; one failure doesn't sink the others.
   const settledPrices = await Promise.allSettled(
     toFetch.map(async (inv) => {
-      const { price, currency } = await fetchYahooPrice(inv.ticker)
+      const { price: rawPrice, currency } = await fetchYahooPrice(inv.ticker)
+      const price = inv.commodityGram ? rawPrice / GRAMS_PER_TROY_OUNCE : rawPrice
       const { error: updateError } = await supabase
         .from('investments')
         .update({

@@ -4,11 +4,20 @@ import { useState, type FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
-import { CATEGORIES, PLATFORMS, hasUnits } from '@/lib/domain/constants'
+import {
+  CATEGORIES,
+  PLATFORMS,
+  hasUnits,
+  COMMODITY_KINDS,
+  QUANTITY_UNITS,
+  DEFAULT_COMMODITY_TICKERS,
+} from '@/lib/domain/constants'
 import type {
   Investment,
   InvestmentInput,
   InvestmentType,
+  CommodityKind,
+  QuantityUnit,
 } from '@/types/database'
 import { Field } from '@/components/ui/field'
 import { Button } from '@/components/ui/button'
@@ -20,6 +29,17 @@ type InvestmentFormProps = {
 const inputClass =
   'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900'
 
+// All default commodity tickers — used to detect whether the ticker was
+// auto-set, so we can replace it when the user changes metal or currency.
+const DEFAULT_COMMODITY_TICKER_SET = new Set(
+  Object.values(DEFAULT_COMMODITY_TICKERS).flatMap((m) => Object.values(m))
+)
+
+function getDefaultCommodityTicker(kind: CommodityKind, curr: string): string {
+  const byCurr = DEFAULT_COMMODITY_TICKERS[kind]
+  return (byCurr as Record<string, string>)[curr] ?? byCurr.USD
+}
+
 export function InvestmentForm({ initial }: InvestmentFormProps) {
   const router = useRouter()
   const supabase = createClient()
@@ -30,6 +50,13 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
   const [type, setType] = useState<InvestmentType>(initial?.type ?? 'stock')
   const [platform, setPlatform] = useState(initial?.platform ?? PLATFORMS[0])
   const [currency, setCurrency] = useState(initial?.currency ?? 'EUR')
+
+  const [commodityKind, setCommodityKind] = useState<CommodityKind>(
+    initial?.commodity_kind ?? 'gold'
+  )
+  const [quantityUnit, setQuantityUnit] = useState<QuantityUnit>(
+    initial?.quantity_unit ?? 'troy_ounce'
+  )
 
   const [currentPrice, setCurrentPrice] = useState(
     initial?.current_price !== null && initial?.current_price !== undefined
@@ -47,9 +74,40 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const isCommodity = type === 'commodity'
   const showPrice = hasUnits(type)
   const showValue = !hasUnits(type)
   const requiresTicker = hasUnits(type)
+
+  const priceLabelSuffix = isCommodity
+    ? ` per ${quantityUnit === 'gram' ? 'gram' : 'troy ounce'} (${currency})`
+    : ' per unit'
+
+  function handleTypeChange(newType: InvestmentType) {
+    setType(newType)
+    if (newType === 'commodity') {
+      // Auto-suggest ticker when switching to commodity, unless the user has
+      // already set a custom (non-commodity-default) ticker.
+      if (!ticker || DEFAULT_COMMODITY_TICKER_SET.has(ticker)) {
+        setTicker(getDefaultCommodityTicker(commodityKind, currency))
+      }
+    }
+  }
+
+  function handleCommodityKindChange(newKind: CommodityKind) {
+    setCommodityKind(newKind)
+    // Keep ticker in sync while it still matches a default commodity ticker.
+    if (isCommodity && DEFAULT_COMMODITY_TICKER_SET.has(ticker)) {
+      setTicker(getDefaultCommodityTicker(newKind, currency))
+    }
+  }
+
+  function handleCurrencyChange(newCurr: string) {
+    setCurrency(newCurr)
+    if (isCommodity && DEFAULT_COMMODITY_TICKER_SET.has(ticker)) {
+      setTicker(getDefaultCommodityTicker(commodityKind, newCurr))
+    }
+  }
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -61,7 +119,7 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
     }
 
     if (requiresTicker && !ticker.trim()) {
-      setError('Ticker is required for stocks, ETFs, and crypto.')
+      setError('Ticker is required for stocks, ETFs, crypto, and commodities.')
       return
     }
     if (!platform.trim()) {
@@ -93,8 +151,8 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
         showValue && currentValue !== '' ? Number(currentValue) : null,
       currency: currency.trim() || 'EUR',
       notes: notes.trim() ? notes.trim() : null,
-      commodity_kind: null,
-      quantity_unit: null,
+      commodity_kind: isCommodity ? commodityKind : null,
+      quantity_unit: isCommodity ? quantityUnit : null,
     }
 
     if (isEdit && initial) {
@@ -151,7 +209,7 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
             id="type"
             className={inputClass}
             value={type}
-            onChange={(e) => setType(e.target.value as InvestmentType)}
+            onChange={(e) => handleTypeChange(e.target.value as InvestmentType)}
           >
             {CATEGORIES.map((c) => (
               <option key={c} value={c}>
@@ -160,6 +218,41 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
             ))}
           </select>
         </Field>
+
+        {isCommodity && (
+          <>
+            <Field label="Metal" htmlFor="commodity_kind" required>
+              <select
+                id="commodity_kind"
+                className={inputClass}
+                value={commodityKind}
+                onChange={(e) =>
+                  handleCommodityKindChange(e.target.value as CommodityKind)
+                }
+              >
+                {COMMODITY_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Quantity unit" htmlFor="quantity_unit" required>
+              <select
+                id="quantity_unit"
+                className={inputClass}
+                value={quantityUnit}
+                onChange={(e) =>
+                  setQuantityUnit(e.target.value as QuantityUnit)
+                }
+              >
+                <option value="gram">gram</option>
+                <option value="troy_ounce">troy ounce</option>
+              </select>
+            </Field>
+          </>
+        )}
 
         <Field
           label={requiresTicker ? 'Ticker' : 'Ticker (optional)'}
@@ -173,12 +266,21 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
             onChange={(e) => setTicker(e.target.value.toUpperCase())}
             placeholder="e.g. TSLA, VWCE.DE, BTC-EUR"
           />
-          {requiresTicker && (
+          {isCommodity ? (
             <p className="mt-1 text-xs text-slate-500">
-              Must match Yahoo Finance format. US stocks:{' '}
-              <code>TSLA</code>. Amsterdam: <code>INGA.AS</code>. Xetra:{' '}
-              <code>VWCE.DE</code>. Crypto in EUR: <code>BTC-EUR</code>.
+              Suggested:{' '}
+              <code>{getDefaultCommodityTicker(commodityKind, currency)}</code>.
+              You can also enter <code>GC=F</code> / <code>SI=F</code> for
+              COMEX futures manually.
             </p>
+          ) : (
+            requiresTicker && (
+              <p className="mt-1 text-xs text-slate-500">
+                Must match Yahoo Finance format. US stocks:{' '}
+                <code>TSLA</code>. Amsterdam: <code>INGA.AS</code>. Xetra:{' '}
+                <code>VWCE.DE</code>. Crypto in EUR: <code>BTC-EUR</code>.
+              </p>
+            )
           )}
         </Field>
 
@@ -187,7 +289,7 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
             id="currency"
             className={inputClass}
             value={currency}
-            onChange={(e) => setCurrency(e.target.value)}
+            onChange={(e) => handleCurrencyChange(e.target.value)}
           >
             <option value="EUR">EUR</option>
             <option value="USD">USD</option>
@@ -196,30 +298,30 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
         </Field>
 
         <Field label="Platform" htmlFor="platform" required>
-  <input
-    id="platform"
-    list="platform-suggestions"
-    className={inputClass}
-    value={platform}
-    onChange={(e) => setPlatform(e.target.value)}
-    placeholder="e.g. DEGIRO, Trading 212, your own"
-    required
-  />
-  <datalist id="platform-suggestions">
-    {PLATFORMS.map((p) => (
-      <option key={p} value={p} />
-    ))}
-  </datalist>
-  <p className="mt-1 text-xs text-slate-500">
-    Pick from suggestions or type your own.
-  </p>
-</Field>
+          <input
+            id="platform"
+            list="platform-suggestions"
+            className={inputClass}
+            value={platform}
+            onChange={(e) => setPlatform(e.target.value)}
+            placeholder="e.g. DEGIRO, Trading 212, your own"
+            required
+          />
+          <datalist id="platform-suggestions">
+            {PLATFORMS.map((p) => (
+              <option key={p} value={p} />
+            ))}
+          </datalist>
+          <p className="mt-1 text-xs text-slate-500">
+            Pick from suggestions or type your own.
+          </p>
+        </Field>
 
         {showPrice && (
           <Field
-            label="Current price per unit"
+            label={`Current price${priceLabelSuffix}`}
             htmlFor="current_price"
-            hint="Latest price per share/coin. Used with your quantity to compute value."
+            hint="Latest price. Used with your quantity to compute value."
           >
             <input
               id="current_price"
