@@ -11,4 +11,5 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/investments', label: 'Investments', icon: 'investments' },
   { href: '/transactions', label: 'Transactions', icon: 'transactions' },
   { href: '/history', label: 'History', icon: 'investments' },
+  { href: '/recurring', label: 'Recurring', icon: 'recurring' },
 ]
