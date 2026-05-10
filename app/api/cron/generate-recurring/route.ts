@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { loadFxRates } from '@/lib/domain/fx'
 import { hasUnits } from '@/lib/domain/constants'
 import { buildGeneratedTransaction } from '@/lib/domain/recurring'
@@ -18,44 +20,23 @@ type RuleResult = {
   error?: string
 }
 
-// POST is used so it cannot be triggered by a browser prefetch or link click.
-// Later, when the Vercel cron fires this as a GET, we can add a GET handler
-// guarded by CRON_SECRET.
-export async function POST() {
-  const supabase = await createClient()
+// ---------------------------------------------------------------------------
+// Core processing — called by both GET (cron) and POST (manual)
+// ---------------------------------------------------------------------------
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 })
-  }
+async function processRules(
+  supabase: SupabaseClient,
+  rules: RecurringTransaction[],
+  fxRates: Record<string, number>,
+  todayUTC: Date,
+): Promise<{ results: RuleResult[]; generated: number; skipped: number; failed: number }> {
+  const results: RuleResult[] = []
+  let generated = 0
+  let skipped = 0
+  let failed = 0
 
-  // UTC midnight for today — consistent with the date arithmetic in recurring.ts.
-  const now = new Date()
-  const todayUTC = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
-  )
+  if (rules.length === 0) return { results, generated, skipped, failed }
 
-  // ── 1. Load active recurring rules ────────────────────────────────────────
-  const { data: rulesData, error: rulesError } = await supabase
-    .from('recurring_transactions')
-    .select('*')
-    .eq('user_id', user.id)
-    .eq('active', true)
-    .returns<RecurringTransaction[]>()
-
-  if (rulesError) {
-    return NextResponse.json({ error: rulesError.message }, { status: 500 })
-  }
-
-  const rules = rulesData ?? []
-
-  if (rules.length === 0) {
-    return NextResponse.json({ ok: true, generated: 0, skipped: 0, failed: 0, results: [] })
-  }
-
-  // ── 2. Load investments referenced by these rules ─────────────────────────
   const investmentIds = [...new Set(rules.map((r) => r.investment_id))]
 
   const { data: investmentsData, error: invError } = await supabase
@@ -65,21 +46,23 @@ export async function POST() {
     .returns<Investment[]>()
 
   if (invError) {
-    return NextResponse.json({ error: invError.message }, { status: 500 })
+    return {
+      results: rules.map((r) => ({
+        rule_id: r.id,
+        investment_id: r.investment_id,
+        investment_name: '(unknown)',
+        status: 'failed' as const,
+        error: `Failed to load investments: ${invError.message}`,
+      })),
+      generated: 0,
+      skipped: 0,
+      failed: rules.length,
+    }
   }
 
   const investmentMap = new Map<string, Investment>(
-    (investmentsData ?? []).map((inv) => [inv.id, inv])
+    (investmentsData ?? []).map((inv) => [inv.id, inv]),
   )
-
-  // ── 3. Load FX rates ──────────────────────────────────────────────────────
-  const { rates: fxRates } = await loadFxRates(supabase)
-
-  // ── 4. Process each rule — one failure must not abort the rest ────────────
-  const results: RuleResult[] = []
-  let generated = 0
-  let skipped = 0
-  let failed = 0
 
   for (const rule of rules) {
     const investment = investmentMap.get(rule.investment_id)
@@ -99,7 +82,6 @@ export async function POST() {
     try {
       const result = buildGeneratedTransaction(rule, investment, fxRates, todayUTC)
 
-      // ── skip ───────────────────────────────────────────────────────────────
       if (!result.ok) {
         results.push({
           rule_id: rule.id,
@@ -112,7 +94,6 @@ export async function POST() {
         continue
       }
 
-      // ── insert transaction ─────────────────────────────────────────────────
       const { error: insertError } = await supabase
         .from('transactions')
         .insert(result.payload)
@@ -130,10 +111,6 @@ export async function POST() {
         continue
       }
 
-      // ── advance last_generated_date ────────────────────────────────────────
-      // Must happen immediately after insert. If this fails, the next run will
-      // attempt to insert the same period again (duplicate risk). Logged as
-      // failed so the user can investigate.
       const { error: ruleUpdateError } = await supabase
         .from('recurring_transactions')
         .update({
@@ -155,11 +132,7 @@ export async function POST() {
         continue
       }
 
-      // ── cash-flow side-effect for non-unit fee transactions ────────────────
-      // For cash / real estate / custom investments, a fee transaction reduces
-      // current_value (mirrors the transaction form's auto-update behaviour).
-      // Unit assets (stock/ETF/crypto/commodity) derive value from
-      // quantity × current_price, so current_value is not touched there.
+      // Cash-flow side-effect: non-unit fee reduces current_value
       if (result.payload.type === 'fee' && !hasUnits(investment.type)) {
         const delta = -(result.payload.amount ?? 0)
         if (delta !== 0) {
@@ -198,11 +171,103 @@ export async function POST() {
     }
   }
 
+  return { results, generated, skipped, failed }
+}
+
+// ---------------------------------------------------------------------------
+// GET — Vercel cron trigger, runs for ALL users
+// Vercel sends: GET /api/cron/generate-recurring
+//               Authorization: Bearer <CRON_SECRET>
+// ---------------------------------------------------------------------------
+
+export async function GET(req: Request) {
+  const expected = process.env.CRON_SECRET
+  if (!expected) {
+    return NextResponse.json(
+      { error: 'CRON_SECRET is not configured on the server.' },
+      { status: 500 },
+    )
+  }
+  if (req.headers.get('authorization') !== `Bearer ${expected}`) {
+    return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
+  }
+
+  const startedAt = new Date().toISOString()
+  const supabase = createAdminClient()
+
+  const now = new Date()
+  const todayUTC = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  )
+
+  const { rates: fxRates } = await loadFxRates(supabase)
+
+  const { data: rulesData, error: rulesError } = await supabase
+    .from('recurring_transactions')
+    .select('*')
+    .eq('active', true)
+    .returns<RecurringTransaction[]>()
+
+  if (rulesError) {
+    return NextResponse.json({ error: rulesError.message }, { status: 500 })
+  }
+
+  const { results, generated, skipped, failed } = await processRules(
+    supabase,
+    rulesData ?? [],
+    fxRates,
+    todayUTC,
+  )
+
   return NextResponse.json({
     ok: true,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
     generated,
     skipped,
     failed,
     results,
   })
+}
+
+// ---------------------------------------------------------------------------
+// POST — manual trigger for the currently logged-in user only
+// ---------------------------------------------------------------------------
+
+export async function POST() {
+  const supabase = await createClient()
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) {
+    return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 })
+  }
+
+  const now = new Date()
+  const todayUTC = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  )
+
+  const { rates: fxRates } = await loadFxRates(supabase)
+
+  const { data: rulesData, error: rulesError } = await supabase
+    .from('recurring_transactions')
+    .select('*')
+    .eq('user_id', user.id)
+    .eq('active', true)
+    .returns<RecurringTransaction[]>()
+
+  if (rulesError) {
+    return NextResponse.json({ error: rulesError.message }, { status: 500 })
+  }
+
+  const { results, generated, skipped, failed } = await processRules(
+    supabase,
+    rulesData ?? [],
+    fxRates,
+    todayUTC,
+  )
+
+  return NextResponse.json({ ok: true, generated, skipped, failed, results })
 }
