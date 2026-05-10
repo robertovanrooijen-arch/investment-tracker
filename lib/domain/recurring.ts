@@ -162,7 +162,6 @@ export type GeneratedTransactionPayload = {
   price_per_unit: number | null
   amount: number | null
   fee: number
-  currency: string
   price_currency: string
   fee_currency: string
   fx_rate_to_eur: number | null
@@ -223,15 +222,14 @@ export function buildGeneratedTransaction(
   const fxRateToEur   = fxRates[priceCurrency] ?? null
 
   const base = {
-    investment_id:   investment.id,
-    user_id:         investment.user_id,
-    currency:        priceCurrency,
-    price_currency:  priceCurrency,
-    fee_currency:    rule.fee_currency,
-    fx_rate_to_eur:  fxRateToEur,
-    notes:           rule.notes,
+    investment_id:     investment.id,
+    user_id:           investment.user_id,
+    price_currency:    priceCurrency,
+    fee_currency:      rule.fee_currency,
+    fx_rate_to_eur:    fxRateToEur,
+    notes:             rule.notes,
     recurring_rule_id: rule.id,
-    date:            dueDateStr,
+    date:              dueDateStr,
   }
 
   // ── buy ───────────────────────────────────────────────────────────────────
