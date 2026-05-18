@@ -3,7 +3,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { loadFxRates } from '@/lib/domain/fx'
-import { hasUnits } from '@/lib/domain/constants'
+import { hasUnits, GRAMS_PER_TROY_OUNCE } from '@/lib/domain/constants'
+import { fetchYahooPrice } from '@/lib/domain/yahoo-price'
 import { buildGeneratedTransaction } from '@/lib/domain/recurring'
 import type { RecurringTransaction, Investment } from '@/types/database'
 
@@ -80,7 +81,50 @@ async function processRules(
     }
 
     try {
-      const result = buildGeneratedTransaction(rule, investment, fxRates, todayUTC)
+      // For buy rules on unit assets with a ticker, refresh the price from
+      // Yahoo first so the transaction uses live data, not a stale stored price.
+      let priceInvestment = investment
+      if (
+        rule.type === 'buy' &&
+        hasUnits(investment.type) &&
+        investment.ticker
+      ) {
+        let refreshed: typeof investment
+        try {
+          const ticker = investment.ticker.trim()
+          const { price: rawPrice, currency } = await fetchYahooPrice(ticker)
+          const commodityGram =
+            investment.type === 'commodity' && investment.quantity_unit === 'gram'
+          const price = commodityGram ? rawPrice / GRAMS_PER_TROY_OUNCE : rawPrice
+          const fetchedAt = new Date().toISOString()
+          await supabase
+            .from('investments')
+            .update({
+              current_price: price,
+              currency,
+              price_last_updated_at: fetchedAt,
+              price_source: 'yahoo',
+              updated_at: fetchedAt,
+            })
+            .eq('id', investment.id)
+          refreshed = { ...investment, current_price: price, currency }
+        } catch (priceErr) {
+          results.push({
+            rule_id: rule.id,
+            investment_id: rule.investment_id,
+            investment_name: investment.name,
+            status: 'skipped',
+            reason: 'price_refresh_failed',
+            error:
+              priceErr instanceof Error ? priceErr.message : 'Unknown error',
+          })
+          skipped++
+          continue
+        }
+        priceInvestment = refreshed
+      }
+
+      const result = buildGeneratedTransaction(rule, priceInvestment, fxRates, todayUTC)
 
       if (!result.ok) {
         results.push({
