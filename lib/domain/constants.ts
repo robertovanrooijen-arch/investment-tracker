@@ -15,13 +15,33 @@ export const CATEGORIES: InvestmentType[] = [
 ]
 
 export const PLATFORMS: string[] = [
-  'Degiro',
+  'DEGIRO',
   'Trade Republic',
+  'Gold Republic',
+  'Bitvavo',
   'Binance',
   'ING',
   'Real Estate',
   'Custom',
 ]
+
+// Maps lowercase-normalised input to the canonical display name.
+const PLATFORM_ALIASES: Record<string, string> = {
+  'degiro':        'DEGIRO',
+  'trade republic': 'Trade Republic',
+  'gold republic': 'Gold Republic',
+  'goldrepublic':  'Gold Republic',
+  'bitvavo':       'Bitvavo',
+  'binance':       'Binance',
+  'ing':           'ING',
+  'real estate':   'Real Estate',
+  'custom':        'Custom',
+}
+
+export function normalizePlatformName(raw: string): string {
+  const trimmed = raw.trim().replace(/\s+/g, ' ')
+  return PLATFORM_ALIASES[trimmed.toLowerCase()] ?? trimmed
+}
 
 // ---------------------------------------------------------------------------
 // Commodity (bullion) constants — Step 1

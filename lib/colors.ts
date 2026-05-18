@@ -11,12 +11,14 @@ export const CATEGORY_COLORS: Record<InvestmentType, string> = {
 }
 
 export const PLATFORM_COLORS: Record<string, string> = {
-  Degiro: 'bg-blue-600',
+  DEGIRO:           'bg-blue-600',
   'Trade Republic': 'bg-slate-800',
-  Binance: 'bg-yellow-500',
-  ING: 'bg-orange-500',
-  'Real Estate': 'bg-rose-500',
-  Custom: 'bg-slate-500',
+  'Gold Republic':  'bg-yellow-600',
+  Bitvavo:          'bg-indigo-500',
+  Binance:          'bg-yellow-500',
+  ING:              'bg-orange-500',
+  'Real Estate':    'bg-rose-500',
+  Custom:           'bg-slate-500',
 }
 
 export function categoryColor(type: InvestmentType | string): string {

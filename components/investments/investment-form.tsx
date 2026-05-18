@@ -11,6 +11,7 @@ import {
   COMMODITY_KINDS,
   QUANTITY_UNITS,
   DEFAULT_COMMODITY_TICKERS,
+  normalizePlatformName,
 } from '@/lib/domain/constants'
 import type {
   Investment,
@@ -139,7 +140,7 @@ export function InvestmentForm({ initial }: InvestmentFormProps) {
       name: name.trim(),
       ticker: ticker.trim() ? ticker.trim().toUpperCase() : null,
       type,
-      platform: platform.trim(),
+      platform: normalizePlatformName(platform),
       current_price:
         showPrice && currentPrice !== '' ? Number(currentPrice) : null,
       current_value:

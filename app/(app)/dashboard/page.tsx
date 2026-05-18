@@ -13,6 +13,7 @@ import {
 } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
 import { categoryColor, platformColor } from '@/lib/colors'
+import { normalizePlatformName } from '@/lib/domain/constants'
 import type { Investment, Transaction, InvestmentType } from '@/types/database'
 
 type TxWithInvestment = Transaction & {
@@ -64,7 +65,7 @@ export default async function DashboardPage() {
   const byPlatform = computeAllocation(
     investments,
     transactions,
-    (i) => i.platform,
+    (i) => normalizePlatformName(i.platform),
     fxRates
   )
 
