@@ -4,7 +4,8 @@ import type { FxRates } from '@/lib/domain/fx'
 
 export type ChartPoint = {
   date: string
-  value_eur: number | null        // null on transaction-only dates (no snapshot)
+  // null only when no snapshot AND no price estimate is available for that date
+  value_eur: number | null
   cost_basis_eur: number
   unrealized_profit_eur: number | null  // null when value_eur is null
 }
@@ -42,12 +43,13 @@ function sortChron(txs: Transaction[]): Transaction[] {
  * Builds a display-only chart timeline for a single investment.
  *
  * Dates included: all snapshot dates + all transaction dates + today.
- * Value: snapshot value for historical dates with a snapshot, null otherwise,
- *        live currentMetrics.currentValue for today.
- * Cost basis: walked from transactions using the same avg-cost method as
- *             computeInvestmentMetrics. Overridden by currentMetrics for today.
- * Unrealized P/L: value_eur − cost_basis_eur (null when value_eur is null).
- *
+ * Value priority per date:
+ *   1. today        → currentMetrics.currentValue (matches top-card exactly)
+ *   2. has buy/sell → sharesHeld × transaction price (post-tx position visible)
+ *   3. has snapshot → snapshot.value_eur (end-of-day market value from cron)
+ *   4. carry-fwd    → sharesHeld × last known price (unit asset only)
+ *   5. null         → no usable price
+ * Cost basis: walked from transactions (avg-cost method, same as calculations.ts).
  * Nothing is written to the database. Display-only.
  */
 export function buildInvestmentChartTimeline(
@@ -69,11 +71,24 @@ export function buildInvestmentChartTimeline(
   let txIdx = 0
   let sharesHeld = 0
   let costBasisEur = 0
+  // Tracks the most-recent buy/sell price (EUR per unit) seen so far.
+  // Used to estimate value on transaction-only dates that have no snapshot.
+  // Priority for value: (1) snapshot, (2) quantity × last known price, (3) null.
+  let lastPriceEurPerUnit = 0
 
   const points: ChartPoint[] = []
 
   for (const date of allDates) {
+    // txPriceEurPerUnit: set when a buy/sell with a price is processed for this
+    // exact date. Used to override snapshot value so the chart reflects the
+    // post-transaction position (post-buy quantity × buy price) rather than the
+    // end-of-day snapshot price, which may differ due to intraday price movement.
+    let txPriceEurPerUnit: number | null = null
+
     // Apply every transaction whose date ≤ this chart date (in chronological order).
+    // Because allDates includes every transaction date, all transactions from
+    // earlier dates have already been consumed; this loop processes only the
+    // transactions for exactly `date`.
     while (txIdx < sortedTxs.length && sortedTxs[txIdx].date <= date) {
       const tx = sortedTxs[txIdx]
       const rate = rateToEur(tx, fxRates)
@@ -83,12 +98,20 @@ export function buildInvestmentChartTimeline(
           // grossEur + feeEur — mirrors calculations.ts exactly
           costBasisEur += tx.quantity * tx.price_per_unit * rate + feeInEur(tx, fxRates)
           sharesHeld += tx.quantity
+          const p = tx.price_per_unit * rate
+          lastPriceEurPerUnit = p
+          txPriceEurPerUnit = p   // record that this date has a transaction price
         } else if (tx.type === 'sell' && tx.quantity != null && sharesHeld > 0) {
           const sellQty = Math.min(tx.quantity, sharesHeld)
           if (sellQty > 0) {
-            // Reduce cost basis by avg cost × sold qty (FIFO avg-cost)
+            // Reduce cost basis by avg cost × sold qty (avg-cost method)
             costBasisEur -= (costBasisEur / sharesHeld) * sellQty
             sharesHeld -= sellQty
+          }
+          if (tx.price_per_unit != null) {
+            const p = tx.price_per_unit * rate
+            lastPriceEurPerUnit = p
+            txPriceEurPerUnit = p
           }
         }
       } else {
@@ -116,8 +139,24 @@ export function buildInvestmentChartTimeline(
       continue
     }
 
-    // Historical date: snapshot value if available, else null.
-    const valueEur = snapshotMap.get(date) ?? null
+    // Historical value priority:
+    // 1. Transaction date (buy/sell): post-transaction quantity × transaction price.
+    //    Snapshot is skipped so the buy/sell effect is visible on that date.
+    // 2. Snapshot exists: authoritative end-of-day market value from the cron.
+    // 3. Carry forward: unit asset with known price but no snapshot.
+    // 4. null: no usable price data.
+    let valueEur: number | null
+
+    if (isUnit && txPriceEurPerUnit !== null && sharesHeld > 0) {
+      valueEur = sharesHeld * txPriceEurPerUnit
+    } else if (snapshotMap.has(date)) {
+      valueEur = snapshotMap.get(date)!
+    } else if (isUnit && sharesHeld > 0 && lastPriceEurPerUnit > 0) {
+      valueEur = sharesHeld * lastPriceEurPerUnit
+    } else {
+      valueEur = null
+    }
+
     points.push({
       date,
       value_eur: valueEur,
