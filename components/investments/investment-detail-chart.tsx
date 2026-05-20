@@ -11,13 +11,7 @@ import {
   YAxis,
 } from 'recharts'
 import { money } from '@/lib/format'
-
-type Snapshot = {
-  date: string
-  value_eur: number
-  remaining_cost_basis_eur: number
-  unrealized_profit_eur: number
-}
+import type { ChartPoint } from '@/lib/domain/chart-timeline'
 
 type Preset = '7d' | '30d' | '90d' | '1y' | 'all'
 
@@ -38,22 +32,26 @@ const DAYS_FOR_PRESET: Record<Exclude<Preset, 'all'>, number> = {
 
 type LineKey = 'value' | 'costBasis' | 'unrealizedPL'
 
-const LINE_META = {
-    value: { label: 'Value', color: '#0f172a', dataKey: 'value_eur' },
-    costBasis: {
-      label: 'Cost basis',
-      color: '#64748b',
-      dataKey: 'remaining_cost_basis_eur',
-    },
-    unrealizedPL: {
-      label: 'Unrealized P/L',
-      color: '#b45309',
-      dataKey: 'unrealized_profit_eur',
-    },
-  } satisfies Record<
-    LineKey,
-    { label: string; color: string; dataKey: keyof Snapshot }
-  >
+const LINE_META: Record<LineKey, { label: string; color: string; dataKey: keyof ChartPoint; connectNulls: boolean }> = {
+  value: {
+    label: 'Value',
+    color: '#0f172a',
+    dataKey: 'value_eur',
+    connectNulls: true,
+  },
+  costBasis: {
+    label: 'Cost basis',
+    color: '#64748b',
+    dataKey: 'cost_basis_eur',
+    connectNulls: false,
+  },
+  unrealizedPL: {
+    label: 'Unrealized P/L',
+    color: '#b45309',
+    dataKey: 'unrealized_profit_eur',
+    connectNulls: true,
+  },
+}
 
 const LINE_ORDER: LineKey[] = ['value', 'costBasis', 'unrealizedPL']
 
@@ -61,28 +59,27 @@ function todayMinusDaysIso(days: number): string {
   const d = new Date()
   d.setHours(0, 0, 0, 0)
   d.setDate(d.getDate() - days)
-
   const yyyy = d.getFullYear()
   const mm = String(d.getMonth() + 1).padStart(2, '0')
   const dd = String(d.getDate()).padStart(2, '0')
-
   return `${yyyy}-${mm}-${dd}`
 }
 
-function filterByPreset(snapshots: Snapshot[], preset: Preset): Snapshot[] {
-  if (preset === 'all') return snapshots
+function filterByPreset(points: ChartPoint[], preset: Preset): ChartPoint[] {
+  if (preset === 'all') return points
   const cutoff = todayMinusDaysIso(DAYS_FOR_PRESET[preset])
-  return snapshots.filter((s) => s.date >= cutoff)
+  return points.filter((p) => p.date >= cutoff)
 }
 
 function formatAxisDate(date: string): string {
-  const d = new Date(`${date}T00:00:00`)
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  })
 }
 
 function formatLongDate(date: string): string {
-  const d = new Date(`${date}T00:00:00`)
-  return d.toLocaleDateString(undefined, {
+  return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
     weekday: 'short',
     year: 'numeric',
     month: 'short',
@@ -91,10 +88,10 @@ function formatLongDate(date: string): string {
 }
 
 type Props = {
-  snapshots: Snapshot[]
+  chartPoints: ChartPoint[]
 }
 
-export function InvestmentDetailChart({ snapshots }: Props) {
+export function InvestmentDetailChart({ chartPoints }: Props) {
   const [preset, setPreset] = useState<Preset>('30d')
   const [visible, setVisible] = useState<Record<LineKey, boolean>>({
     value: true,
@@ -103,37 +100,25 @@ export function InvestmentDetailChart({ snapshots }: Props) {
   })
 
   const filtered = useMemo(
-    () => filterByPreset(snapshots, preset),
-    [snapshots, preset]
+    () => filterByPreset(chartPoints, preset),
+    [chartPoints, preset],
   )
 
-  if (snapshots.length === 0) {
-    return (
-      <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center">
-        <p className="font-medium text-slate-900">
-          No history for this investment yet
-        </p>
-        <p className="mt-1 text-sm text-slate-500">
-          Click <span className="font-medium">Refresh portfolio</span> on the
-          dashboard to start tracking this investment over time.
-        </p>
-      </div>
-    )
-  }
-
-  if (snapshots.length === 1) {
+  if (chartPoints.length <= 1) {
     return (
       <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center">
         <p className="font-medium text-slate-900">Just one data point so far</p>
         <p className="mt-1 text-sm text-slate-500">
           After tomorrow&apos;s automated refresh you&apos;ll see the trend line.
         </p>
-        <p className="mt-3 text-sm text-slate-700">
-          Latest value:{' '}
-          <span className="font-semibold">
-            {money(snapshots[0].value_eur, 'EUR')}
-          </span>
-        </p>
+        {chartPoints[0] && (
+          <p className="mt-3 text-sm text-slate-700">
+            Latest value:{' '}
+            <span className="font-semibold">
+              {money(chartPoints[0].value_eur, 'EUR')}
+            </span>
+          </p>
+        )}
       </div>
     )
   }
@@ -142,9 +127,11 @@ export function InvestmentDetailChart({ snapshots }: Props) {
   const start = hasFiltered ? filtered[0] : null
   const end = hasFiltered ? filtered[filtered.length - 1] : null
 
-  const delta = start && end ? end.value_eur - start.value_eur : 0
-  const pct =
-    start && end && start.value_eur !== 0 ? delta / start.value_eur : null
+  // Use value_eur from both ends; fall back to 0 when null (transaction-only point)
+  const startValue = start?.value_eur ?? 0
+  const endValue = end?.value_eur ?? 0
+  const delta = start && end ? endValue - startValue : 0
+  const pct = start && end && startValue !== 0 ? delta / startValue : null
 
   const tone: 'positive' | 'negative' | 'neutral' =
     delta > 0 ? 'positive' : delta < 0 ? 'negative' : 'neutral'
@@ -179,7 +166,7 @@ export function InvestmentDetailChart({ snapshots }: Props) {
                 <p className="mt-2 text-sm text-slate-600">
                   From{' '}
                   <span className="font-medium text-slate-900">
-                    {money(start.value_eur, 'EUR')}
+                    {money(startValue, 'EUR')}
                   </span>{' '}
                   on {formatLongDate(start.date)} ·{' '}
                   <span
@@ -289,6 +276,7 @@ export function InvestmentDetailChart({ snapshots }: Props) {
 
                 <Tooltip
                   formatter={(value, name) => {
+                    if (value === null || value === undefined) return ['—', name]
                     const n = typeof value === 'number' ? value : Number(value)
                     return [money(Number.isFinite(n) ? n : 0, 'EUR'), name]
                   }}
@@ -316,6 +304,7 @@ export function InvestmentDetailChart({ snapshots }: Props) {
                       strokeWidth={2}
                       dot={false}
                       activeDot={{ r: 4 }}
+                      connectNulls={meta.connectNulls}
                     />
                   )
                 })}

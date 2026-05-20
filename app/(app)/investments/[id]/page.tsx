@@ -15,6 +15,7 @@ import {
 import { loadFxRates } from '@/lib/domain/fx'
 import { txTypeBadgeClass } from '@/lib/domain/transaction-helpers'
 import { hasUnits } from '@/lib/domain/constants'
+import { buildInvestmentChartTimeline } from '@/lib/domain/chart-timeline'
 import type { Investment, Transaction } from '@/types/database'
 
 export default async function InvestmentDetailPage({
@@ -301,7 +302,16 @@ export default async function InvestmentDetailPage({
         </div>
       )}
 
-      <InvestmentDetailChart snapshots={snapshots} />
+      <InvestmentDetailChart
+        chartPoints={buildInvestmentChartTimeline(
+          investment,
+          transactions,
+          snapshots,
+          { currentValue: m.currentValue, remainingCostBasis: m.remainingCostBasis, unrealizedProfit: m.unrealizedProfit },
+          new Date().toISOString().slice(0, 10),
+          fxRates,
+        )}
+      />
 
       {investment.notes && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
