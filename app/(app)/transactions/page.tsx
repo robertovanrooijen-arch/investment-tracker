@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
+import { ClickableTr } from '@/components/ui/clickable-tr'
 import { money, fmtDate } from '@/lib/format'
 import { txTypeBadgeClass } from '@/lib/domain/transaction-helpers'
 import { txAmountInEur } from '@/lib/domain/calculations'
@@ -81,7 +82,6 @@ export default async function TransactionsPage() {
                 <th className="px-6 py-3 font-medium text-right">Price</th>
                 <th className="px-6 py-3 font-medium text-right">Amount (EUR)</th>
                 <th className="px-6 py-3 font-medium text-right">Fee</th>
-                <th className="px-6 py-3" />
               </tr>
             </thead>
             <tbody>
@@ -91,8 +91,9 @@ export default async function TransactionsPage() {
                 const feeCcy = tx.fee_currency ?? priceCcy
                 const amountEur = txAmountInEur(tx, fxRates)
                 return (
-                  <tr
+                  <ClickableTr
                     key={tx.id}
+                    href={`/transactions/${tx.id}/edit`}
                     className="border-b last:border-b-0 border-slate-100 hover:bg-slate-50"
                   >
                     <td className="px-6 py-4 text-sm text-slate-700 whitespace-nowrap">
@@ -127,21 +128,13 @@ export default async function TransactionsPage() {
                     <td className="px-6 py-4 text-right text-sm text-slate-500">
                       {tx.fee > 0 ? money(tx.fee, feeCcy) : '—'}
                     </td>
-                    <td className="px-6 py-4 text-right">
-                      <Link
-                        href={`/transactions/${tx.id}/edit`}
-                        className="text-sm font-medium text-slate-700 hover:text-slate-900"
-                      >
-                        Edit
-                      </Link>
-                    </td>
-                  </tr>
+                  </ClickableTr>
                 )
               })}
             </tbody>
           </table>
 
-          {/* Mobile cards */}
+          {/* Mobile cards — already wrapped in Link */}
           <ul className="md:hidden divide-y divide-slate-100">
             {transactions.map((tx) => {
               const priceCcy =

@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
 import { StatCard } from '@/components/ui/stat-card'
+import { ClickableTr } from '@/components/ui/clickable-tr'
 import { RefreshPriceButton } from '@/components/investments/refresh-price-button'
 import { InvestmentDetailChart } from '@/components/investments/investment-detail-chart'
 import { money, fmtDate } from '@/lib/format'
@@ -352,7 +353,6 @@ export default async function InvestmentDetailPage({
                   <th className="px-6 py-3 font-medium text-right">Price</th>
                   <th className="px-6 py-3 font-medium text-right">Amount</th>
                   <th className="px-6 py-3 font-medium text-right">Fee</th>
-                  <th className="px-6 py-3" />
                 </tr>
               </thead>
               <tbody>
@@ -362,8 +362,9 @@ export default async function InvestmentDetailPage({
                   const amountNative = txAmountInPriceCurrency(tx, fxRates)
 
                   return (
-                    <tr
+                    <ClickableTr
                       key={tx.id}
+                      href={`/transactions/${tx.id}/edit`}
                       className="border-b last:border-b-0 border-slate-100 hover:bg-slate-50"
                     >
                       <td className="px-6 py-4 text-sm text-slate-700 whitespace-nowrap">
@@ -388,15 +389,7 @@ export default async function InvestmentDetailPage({
                       <td className="px-6 py-4 text-right text-sm text-slate-500 tabular-nums">
                         {tx.fee > 0 ? money(tx.fee, feeCcy) : '—'}
                       </td>
-                      <td className="px-6 py-4 text-right">
-                        <Link
-                          href={`/transactions/${tx.id}/edit`}
-                          className="text-sm font-medium text-slate-700 hover:text-slate-900"
-                        >
-                          Edit
-                        </Link>
-                      </td>
-                    </tr>
+                    </ClickableTr>
                   )
                 })}
               </tbody>

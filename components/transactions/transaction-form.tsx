@@ -128,6 +128,9 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
     initial?.fx_rate_to_eur != null ? String(initial.fx_rate_to_eur) : ''
   )
 
+  const [interestMode, setInterestMode] = useState<'fixed' | 'pct'>('fixed')
+  const [interestPct, setInterestPct] = useState<string>('')
+
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -162,13 +165,17 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
     if (!selectedInvestment) return
     if (!allowedTypes.includes(type)) {
       setType(allowedTypes[0])
+      setInterestMode('fixed')
+      setInterestPct('')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [investmentId])
 
   const isSell = type === 'sell'
   const isFeeTransaction = type === 'fee'
+  const isInterest = type === 'interest'
   const availableToSell = selectedInvestment?.quantityHeld ?? 0
+  const currentValue = selectedInvestment?.current_value ?? null
 
   const showUnits = isUnit && (type === 'buy' || type === 'sell')
   const showAmount = !showUnits
@@ -199,6 +206,15 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
     if (!Number.isFinite(a) || a <= 0) return null
     return a * effectivePriceToEur
   }, [showAmount, amount, priceCurrency, effectivePriceToEur])
+
+  // Percentage-based interest: amount = currentValue × pct / 100
+  const interestPctAmount = useMemo(() => {
+    if (!isInterest || interestMode !== 'pct') return null
+    const pctNum = parseFloat(interestPct)
+    if (!Number.isFinite(pctNum) || pctNum <= 0) return null
+    if (currentValue == null || currentValue <= 0) return null
+    return (currentValue * pctNum) / 100
+  }, [isInterest, interestMode, interestPct, currentValue])
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
@@ -250,10 +266,22 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
       const gross = finalQuantity * finalPrice
       finalAmount = type === 'buy' ? gross + feeVal : gross - feeVal
     } else {
-      finalAmount = parseFloat(amount)
-      if (!Number.isFinite(finalAmount) || finalAmount < 0) {
-        setError('Amount must be 0 or higher.')
-        return
+      if (isInterest && interestMode === 'pct') {
+        if (interestPctAmount === null || interestPctAmount <= 0) {
+          setError(
+            currentValue == null || currentValue <= 0
+              ? 'This investment has no current value set — update it before using percentage mode.'
+              : 'Enter a valid interest percentage greater than 0.',
+          )
+          return
+        }
+        finalAmount = interestPctAmount
+      } else {
+        finalAmount = parseFloat(amount)
+        if (!Number.isFinite(finalAmount) || finalAmount < 0) {
+          setError('Amount must be 0 or higher.')
+          return
+        }
       }
     }
 
@@ -422,7 +450,14 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
             id="type"
             className={inputClass}
             value={type}
-            onChange={(e) => setType(e.target.value as TxType)}
+            onChange={(e) => {
+              const next = e.target.value as TxType
+              setType(next)
+              if (next !== 'interest') {
+                setInterestMode('fixed')
+                setInterestPct('')
+              }
+            }}
           >
             {allowedTypes.map((t) => (
               <option key={t} value={t}>
@@ -529,27 +564,88 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
         )}
 
         {showAmount && (
-          <Field
-            label={`${AMOUNT_FIELD_LABELS[type]} (${priceCurrency})`}
-            htmlFor="amount"
-            required
-          >
-            <input
-              id="amount"
-              type="number"
-              step="any"
-              min="0"
-              className={inputClass}
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="0.00"
-            />
-            {amountEurPreview !== null && (
-              <p className="mt-1 text-xs text-slate-500">
-                ≈ {money(amountEurPreview, 'EUR')}
-              </p>
+          <div className="md:col-span-2 space-y-3">
+            {isInterest && (
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setInterestMode('fixed')}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                    interestMode === 'fixed'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  Fixed amount
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInterestMode('pct')}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                    interestMode === 'pct'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  Percentage
+                </button>
+              </div>
             )}
-          </Field>
+
+            {(!isInterest || interestMode === 'fixed') && (
+              <Field
+                label={`${AMOUNT_FIELD_LABELS[type]} (${priceCurrency})`}
+                htmlFor="amount"
+                required
+              >
+                <input
+                  id="amount"
+                  type="number"
+                  step="any"
+                  min="0"
+                  className={inputClass}
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  placeholder="0.00"
+                />
+                {amountEurPreview !== null && (
+                  <p className="mt-1 text-xs text-slate-500">
+                    ≈ {money(amountEurPreview, 'EUR')}
+                  </p>
+                )}
+              </Field>
+            )}
+
+            {isInterest && interestMode === 'pct' && (
+              <Field
+                label="Interest rate (%)"
+                htmlFor="interest-pct"
+                required
+              >
+                <input
+                  id="interest-pct"
+                  type="number"
+                  step="any"
+                  min="0"
+                  className={inputClass}
+                  value={interestPct}
+                  onChange={(e) => setInterestPct(e.target.value)}
+                  placeholder="e.g. 2.5"
+                />
+                {interestPctAmount !== null && currentValue !== null && (
+                  <p className="mt-1 text-xs text-slate-500">
+                    = {money(interestPctAmount, priceCurrency)}{' '}
+                    ({interestPct}% of {money(currentValue, priceCurrency)})
+                  </p>
+                )}
+                {(currentValue == null || currentValue <= 0) && (
+                  <p className="mt-1 text-xs text-amber-600">
+                    This investment has no current value set — update it before using percentage mode.
+                  </p>
+                )}
+              </Field>
+            )}
+          </div>
         )}
 
         {showFxOverride && (
