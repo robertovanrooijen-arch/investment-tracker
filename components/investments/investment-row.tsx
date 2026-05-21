@@ -3,15 +3,19 @@
 import { useRouter } from 'next/navigation'
 import { money, fmtDate } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
+import { hasUnits } from '@/lib/domain/constants'
 import type { InvestmentMetrics } from '@/lib/domain/calculations'
 import type { Investment } from '@/types/database'
+
+export type PrevSnap = { value_eur: number; quantity: number | null }
 
 type Props = {
   inv: Investment
   m: InvestmentMetrics
+  prevSnap: PrevSnap | null
 }
 
-export function InvestmentRow({ inv, m }: Props) {
+export function InvestmentRow({ inv, m, prevSnap }: Props) {
   const router = useRouter()
   const href = `/investments/${inv.id}`
 
@@ -23,12 +27,48 @@ export function InvestmentRow({ inv, m }: Props) {
         ? 'text-rose-600'
         : 'text-slate-900'
 
+  // Daily movement — closed positions always show "—".
+  let dailyChangeEur: number | null = null
+  let dailyChangePct: number | null = null
+
+  if (!m.isClosed && prevSnap !== null) {
+    if (hasUnits(inv.type)) {
+      // Unit asset: isolate price movement from new buys/sells.
+      // current_price_eur = currentValue / quantity (FX already baked in)
+      // prev_price_eur    = prevSnap.value_eur / prevSnap.quantity
+      // daily_change_eur  = current_quantity × (current_price − prev_price)
+      // daily_change_pct  = current_price / prev_price − 1   (pure price return)
+      const prevQty = prevSnap.quantity
+      const currQty = m.quantity
+      if (prevQty != null && prevQty > 0 && currQty != null && currQty > 0) {
+        const prevPriceEur = prevSnap.value_eur / prevQty
+        const currPriceEur = m.currentValue / currQty
+        dailyChangeEur = currQty * (currPriceEur - prevPriceEur)
+        dailyChangePct = (currPriceEur / prevPriceEur - 1) * 100
+      }
+      // If snapshot quantity missing/zero → both stay null → shows "—"
+    } else {
+      // Non-unit (cash, real estate, custom): balance movement
+      dailyChangeEur = m.currentValue - prevSnap.value_eur
+      dailyChangePct =
+        prevSnap.value_eur > 0
+          ? (dailyChangeEur / prevSnap.value_eur) * 100
+          : null
+    }
+  }
+
+  const dailyTone =
+    dailyChangeEur === null
+      ? ''
+      : dailyChangeEur > 0
+        ? 'text-emerald-600'
+        : dailyChangeEur < 0
+          ? 'text-rose-600'
+          : 'text-slate-900'
+
   function navigate(e: React.MouseEvent | React.KeyboardEvent) {
-    // Don't hijack a click that the user is doing to select text.
     const selection = typeof window !== 'undefined' ? window.getSelection() : null
     if (selection && selection.toString().length > 0) return
-
-    // Cmd/Ctrl-click opens in a new tab, like a normal link.
     if ('metaKey' in e && (e.metaKey || e.ctrlKey)) {
       window.open(href, '_blank')
       return
@@ -81,6 +121,24 @@ export function InvestmentRow({ inv, m }: Props) {
             <div>{money(m.totalProfit, 'EUR')}</div>
             <div className="text-xs">
               {m.totalProfitPct !== null ? pct(m.totalProfitPct) : '—'}
+            </div>
+          </>
+        ) : (
+          <span className="text-slate-400">—</span>
+        )}
+      </td>
+
+      <td className={`px-6 py-4 text-right text-sm tabular-nums ${dailyTone}`}>
+        {dailyChangeEur !== null ? (
+          <>
+            <div>
+              {dailyChangeEur >= 0 ? '+' : ''}
+              {money(dailyChangeEur, 'EUR')}
+            </div>
+            <div className="text-xs">
+              {dailyChangePct !== null
+                ? `${dailyChangePct >= 0 ? '+' : ''}${dailyChangePct.toFixed(2)}%`
+                : '—'}
             </div>
           </>
         ) : (

@@ -105,8 +105,14 @@ export function RefreshPortfolioButton({ lastRefreshedAt }: Props) {
         </Button>
 
         {status === 'idle' && lastRefreshedAt && (
-          <span className="text-slate-500">
-            Last refreshed {formatRelative(lastRefreshedAt)}
+          <span
+            className={
+              isStale(lastRefreshedAt) ? 'font-medium text-amber-700' : 'text-slate-500'
+            }
+          >
+            {isStale(lastRefreshedAt)
+              ? `⚠ Prices may be stale · ${formatRelative(lastRefreshedAt)}`
+              : `Last refreshed ${formatRelative(lastRefreshedAt)}`}
           </span>
         )}
         {status === 'idle' && !lastRefreshedAt && (
@@ -259,6 +265,12 @@ function parseSummary(json: unknown): Summary | null {
   }
 
   return { prices, fx, snapshotPresent, snapshotError }
+}
+
+const STALE_MS = 4 * 60 * 60 * 1000  // 4 hours
+
+function isStale(iso: string): boolean {
+  return Date.now() - new Date(iso).getTime() > STALE_MS
 }
 
 function formatRelative(iso: string): string {
