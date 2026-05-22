@@ -3,7 +3,6 @@
 import { useRouter } from 'next/navigation'
 import { money, fmtDate } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
-import { hasUnits } from '@/lib/domain/constants'
 import type { InvestmentMetrics } from '@/lib/domain/calculations'
 import type { Investment } from '@/types/database'
 
@@ -12,10 +11,11 @@ export type PrevSnap = { value_eur: number; quantity: number | null }
 type Props = {
   inv: Investment
   m: InvestmentMetrics
-  prevSnap: PrevSnap | null
+  dailyChangeEur: number | null
+  dailyChangePct: number | null
 }
 
-export function InvestmentRow({ inv, m, prevSnap }: Props) {
+export function InvestmentRow({ inv, m, dailyChangeEur, dailyChangePct }: Props) {
   const router = useRouter()
   const href = `/investments/${inv.id}`
 
@@ -26,36 +26,6 @@ export function InvestmentRow({ inv, m, prevSnap }: Props) {
       : m.totalProfit < 0
         ? 'text-rose-600'
         : 'text-slate-900'
-
-  // Daily movement — closed positions always show "—".
-  let dailyChangeEur: number | null = null
-  let dailyChangePct: number | null = null
-
-  if (!m.isClosed && prevSnap !== null) {
-    if (hasUnits(inv.type)) {
-      // Unit asset: isolate price movement from new buys/sells.
-      // current_price_eur = currentValue / quantity (FX already baked in)
-      // prev_price_eur    = prevSnap.value_eur / prevSnap.quantity
-      // daily_change_eur  = current_quantity × (current_price − prev_price)
-      // daily_change_pct  = current_price / prev_price − 1   (pure price return)
-      const prevQty = prevSnap.quantity
-      const currQty = m.quantity
-      if (prevQty != null && prevQty > 0 && currQty != null && currQty > 0) {
-        const prevPriceEur = prevSnap.value_eur / prevQty
-        const currPriceEur = m.currentValue / currQty
-        dailyChangeEur = currQty * (currPriceEur - prevPriceEur)
-        dailyChangePct = (currPriceEur / prevPriceEur - 1) * 100
-      }
-      // If snapshot quantity missing/zero → both stay null → shows "—"
-    } else {
-      // Non-unit (cash, real estate, custom): balance movement
-      dailyChangeEur = m.currentValue - prevSnap.value_eur
-      dailyChangePct =
-        prevSnap.value_eur > 0
-          ? (dailyChangeEur / prevSnap.value_eur) * 100
-          : null
-    }
-  }
 
   const dailyTone =
     dailyChangeEur === null

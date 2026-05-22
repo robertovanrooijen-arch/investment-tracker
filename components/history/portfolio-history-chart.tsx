@@ -107,7 +107,7 @@ const STATIC_SERIES = [
   },
   {
     key: 'invested_assets_eur',
-    label: 'Invested assets',
+    label: 'Invested assets value',
     color: '#3730a3',
     strokeWidth: 1.5,
     strokeDasharray: undefined as string | undefined,
@@ -121,7 +121,7 @@ const STATIC_SERIES = [
   },
   {
     key: 'total_profit_eur',
-    label: 'Total profit',
+    label: 'Unrealized profit',
     color: '#16a34a',
     strokeWidth: 1.5,
     strokeDasharray: undefined as string | undefined,
@@ -223,13 +223,21 @@ function ChartTooltip({
 
 // ── Main component ─────────────────────────────────────────────────────────
 
+// Series visible by default. Type breakdown series and Cash are off by default.
+const DEFAULT_VISIBLE = new Set([
+  'total_value_eur',
+  'invested_assets_eur',
+  'cost_basis_eur',
+  'total_profit_eur',
+])
+
 export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Props) {
   const [preset,    setPreset]    = useState<Preset>('30d')
   const [viewMode,  setViewMode]  = useState<ViewMode>('absolute')
-  const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(new Set())
+  const [visibleSeries, setVisibleSeries] = useState<Set<string>>(new Set(DEFAULT_VISIBLE))
 
   function toggleSeries(key: string) {
-    setHiddenSeries((prev) => {
+    setVisibleSeries((prev) => {
       const next = new Set(prev)
       if (next.has(key)) next.delete(key)
       else next.add(key)
@@ -473,21 +481,21 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
           {/* Series toggles */}
           <div className="flex flex-wrap gap-2">
             {STATIC_SERIES.map((s) => {
-              const hidden = hiddenSeries.has(s.key)
+              const visible = visibleSeries.has(s.key)
               return (
                 <button
                   key={s.key}
                   type="button"
                   onClick={() => toggleSeries(s.key)}
                   className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                    hidden
-                      ? 'border-slate-200 bg-white text-slate-400'
-                      : 'border-slate-200 bg-slate-50 text-slate-700'
+                    visible
+                      ? 'border-slate-200 bg-slate-50 text-slate-700'
+                      : 'border-slate-200 bg-white text-slate-400'
                   }`}
                 >
                   <span
                     className="inline-block h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: hidden ? '#cbd5e1' : s.color }}
+                    style={{ backgroundColor: visible ? s.color : '#cbd5e1' }}
                   />
                   {s.label}
                 </button>
@@ -495,22 +503,22 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
             })}
 
             {activeTypes.map((type) => {
-              const hidden = hiddenSeries.has(type)
-              const color  = TYPE_COLORS[type] ?? '#9ca3af'
+              const visible = visibleSeries.has(type)
+              const color   = TYPE_COLORS[type] ?? '#9ca3af'
               return (
                 <button
                   key={type}
                   type="button"
                   onClick={() => toggleSeries(type)}
                   className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                    hidden
-                      ? 'border-slate-200 bg-white text-slate-400'
-                      : 'border-slate-200 bg-slate-50 text-slate-700'
+                    visible
+                      ? 'border-slate-200 bg-slate-50 text-slate-700'
+                      : 'border-slate-200 bg-white text-slate-400'
                   }`}
                 >
                   <span
                     className="inline-block h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: hidden ? '#cbd5e1' : color }}
+                    style={{ backgroundColor: visible ? color : '#cbd5e1' }}
                   />
                   {TYPE_LABELS[type] ?? type}
                 </button>
@@ -547,7 +555,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
 
                 {/* Static derived series */}
                 {STATIC_SERIES.map((s) =>
-                  hiddenSeries.has(s.key) ? null : (
+                  !visibleSeries.has(s.key) ? null : (
                     <Line
                       key={s.key}
                       type="monotone"
@@ -565,7 +573,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
 
                 {/* Per-type breakdown (cash excluded) */}
                 {activeTypes.map((type) =>
-                  hiddenSeries.has(type) ? null : (
+                  !visibleSeries.has(type) ? null : (
                     <Line
                       key={type}
                       type="monotone"

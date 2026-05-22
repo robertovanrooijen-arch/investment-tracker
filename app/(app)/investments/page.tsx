@@ -1,13 +1,13 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/page-header'
-import { money } from '@/lib/format'
-import { computeInvestmentMetrics, pct } from '@/lib/domain/calculations'
+import { computeInvestmentMetrics } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
 import { hasUnits } from '@/lib/domain/constants'
-import { InvestmentRow } from '@/components/investments/investment-row'
 import { RefreshPortfolioButton } from '@/components/dashboard/refresh-portfolio-button'
+import { InvestmentsList } from '@/components/investments/investments-list'
 import type { PrevSnap } from '@/components/investments/investment-row'
+import type { PreparedRow } from '@/components/investments/investments-list'
 import type { Investment, Transaction } from '@/types/database'
 
 export default async function InvestmentsPage() {
@@ -62,11 +62,34 @@ export default async function InvestmentsPage() {
     }
   }
 
-  const rows = investments.map((inv) => ({
-    inv,
-    m: computeInvestmentMetrics(inv, transactions, fxRates),
-    prevSnap: prevSnapMap.get(inv.id) ?? null,
-  }))
+  const preparedRows: PreparedRow[] = investments.map((inv) => {
+    const m = computeInvestmentMetrics(inv, transactions, fxRates)
+    const prevSnap = prevSnapMap.get(inv.id) ?? null
+
+    let dailyChangeEur: number | null = null
+    let dailyChangePct: number | null = null
+
+    if (!m.isClosed && prevSnap !== null) {
+      if (hasUnits(inv.type)) {
+        const prevQty = prevSnap.quantity
+        const currQty = m.quantity
+        if (prevQty != null && prevQty > 0 && currQty != null && currQty > 0) {
+          const prevPriceEur = prevSnap.value_eur / prevQty
+          const currPriceEur = m.currentValue / currQty
+          dailyChangeEur = currQty * (currPriceEur - prevPriceEur)
+          dailyChangePct = (currPriceEur / prevPriceEur - 1) * 100
+        }
+      } else {
+        dailyChangeEur = m.currentValue - prevSnap.value_eur
+        dailyChangePct =
+          prevSnap.value_eur > 0
+            ? (dailyChangeEur / prevSnap.value_eur) * 100
+            : null
+      }
+    }
+
+    return { inv, m, dailyChangeEur, dailyChangePct }
+  })
 
   return (
     <div className="space-y-6">
@@ -95,7 +118,7 @@ export default async function InvestmentsPage() {
         </div>
       )}
 
-      {!error && rows.length === 0 && (
+      {!error && preparedRows.length === 0 && (
         <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center">
           <p className="text-slate-900 font-medium">No investments yet</p>
           <p className="text-sm text-slate-500 mt-1">
@@ -110,120 +133,8 @@ export default async function InvestmentsPage() {
         </div>
       )}
 
-      {!error && rows.length > 0 && (
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          <table className="hidden md:table w-full">
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-200">
-                <th className="px-6 py-3 font-medium">Name</th>
-                <th className="px-6 py-3 font-medium">Type</th>
-                <th className="px-6 py-3 font-medium">Platform</th>
-                <th className="px-6 py-3 font-medium text-right">Value EUR</th>
-                <th className="px-6 py-3 font-medium text-right">P / L EUR</th>
-                <th className="px-6 py-3 font-medium text-right">Daily</th>
-                <th className="px-6 py-3 font-medium">Updated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(({ inv, m, prevSnap }) => (
-                <InvestmentRow key={inv.id} inv={inv} m={m} prevSnap={prevSnap} />
-              ))}
-            </tbody>
-          </table>
-
-          <ul className="md:hidden divide-y divide-slate-100">
-            {rows.map(({ inv, m, prevSnap }) => {
-              const showPL = m.totalEverInvested > 0
-              const plTone =
-                m.totalProfit > 0
-                  ? 'text-emerald-600'
-                  : m.totalProfit < 0
-                    ? 'text-rose-600'
-                    : 'text-slate-500'
-
-              let dailyChangeEur: number | null = null
-              let dailyChangePct: number | null = null
-
-              if (!m.isClosed && prevSnap !== null) {
-                if (hasUnits(inv.type)) {
-                  const prevQty = prevSnap.quantity
-                  const currQty = m.quantity
-                  if (prevQty != null && prevQty > 0 && currQty != null && currQty > 0) {
-                    const prevPriceEur = prevSnap.value_eur / prevQty
-                    const currPriceEur = m.currentValue / currQty
-                    dailyChangeEur = currQty * (currPriceEur - prevPriceEur)
-                    dailyChangePct = (currPriceEur / prevPriceEur - 1) * 100
-                  }
-                } else {
-                  dailyChangeEur = m.currentValue - prevSnap.value_eur
-                  dailyChangePct =
-                    prevSnap.value_eur > 0
-                      ? (dailyChangeEur / prevSnap.value_eur) * 100
-                      : null
-                }
-              }
-
-              const dailyTone =
-                dailyChangeEur === null
-                  ? 'text-slate-400'
-                  : dailyChangeEur > 0
-                    ? 'text-emerald-600'
-                    : dailyChangeEur < 0
-                      ? 'text-rose-600'
-                      : 'text-slate-500'
-
-              return (
-                <li key={inv.id}>
-                  <Link
-                    href={`/investments/${inv.id}`}
-                    className="flex items-center justify-between px-5 py-4 hover:bg-slate-50"
-                  >
-                    <div className="min-w-0">
-                      <div className="font-medium text-slate-900 truncate flex items-center gap-2">
-                        {inv.name}
-                        {m.isClosed && (
-                          <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
-                            Closed
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
-                        <span>{inv.type}</span>
-                        <span>·</span>
-                        <span>{inv.platform}</span>
-                        <span>·</span>
-                        <span>{inv.currency ?? 'EUR'}</span>
-                      </div>
-                    </div>
-
-                    <div className="text-right shrink-0">
-                      <div className="text-sm text-slate-900 tabular-nums">
-                        {money(m.currentValue, 'EUR')}
-                      </div>
-                      <div className={`text-xs tabular-nums ${plTone}`}>
-                        {showPL
-                          ? m.totalProfitPct !== null
-                            ? pct(m.totalProfitPct)
-                            : '—'
-                          : '—'}
-                      </div>
-                      {dailyChangeEur !== null && (
-                        <div className={`text-xs tabular-nums ${dailyTone}`}>
-                          {dailyChangeEur >= 0 ? '+' : ''}
-                          {money(dailyChangeEur, 'EUR')}
-                          {dailyChangePct !== null && (
-                            <> ({dailyChangePct >= 0 ? '+' : ''}{dailyChangePct.toFixed(2)}%)</>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </Link>
-                </li>
-              )
-            })}
-          </ul>
-        </div>
+      {!error && preparedRows.length > 0 && (
+        <InvestmentsList rows={preparedRows} />
       )}
     </div>
   )
