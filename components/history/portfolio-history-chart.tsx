@@ -18,6 +18,8 @@ import type { InvestmentType } from '@/types/database'
 export type PortfolioSnapshot = {
   date: string
   total_value_eur: number
+  total_invested_eur: number
+  total_unrealized_eur: number
 }
 
 export type InvSnapshot = {
@@ -294,12 +296,19 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
         }
       }
 
+      // For dates with no investment_snapshots (e.g. annual historical anchors),
+      // fall back to portfolio-level totals stored in portfolio_snapshots.
+      // invested_assets_eur stays 0 — no per-type breakdown available.
+      const hasInvSnaps = typeMap.size > 0
+      const costBasis       = hasInvSnaps ? investedCost               : snap.total_invested_eur
+      const unrealizedProfit = hasInvSnaps ? investedValue - investedCost : snap.total_unrealized_eur
+
       const row: Record<string, number | string> = {
         date:                snap.date,
         total_value_eur:     snap.total_value_eur,
         invested_assets_eur: investedValue,
-        cost_basis_eur:      investedCost,
-        total_profit_eur:    investedValue - investedCost,
+        cost_basis_eur:      costBasis,
+        total_profit_eur:    unrealizedProfit,
         cash_value_eur:      cashValue,
       }
 

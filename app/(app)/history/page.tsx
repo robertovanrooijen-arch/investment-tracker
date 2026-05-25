@@ -8,6 +8,8 @@ export const dynamic = 'force-dynamic'
 type PortfolioSnapshotRow = {
   date: string
   total_value_eur: number
+  total_invested_eur: number
+  total_unrealized_eur: number
 }
 
 type InvSnapshotRow = {
@@ -23,7 +25,7 @@ export default async function HistoryPage() {
   const [portfolioRes, invSnapshotRes] = await Promise.all([
     supabase
       .from('portfolio_snapshots')
-      .select('date, total_value_eur')
+      .select('date, total_value_eur, total_invested_eur, total_unrealized_eur')
       .order('date', { ascending: true }),
     supabase
       .from('investment_snapshots')
@@ -37,6 +39,8 @@ export default async function HistoryPage() {
     (row) => ({
       date: String(row.date),
       total_value_eur: Number(row.total_value_eur),
+      total_invested_eur: Number(row.total_invested_eur),
+      total_unrealized_eur: Number(row.total_unrealized_eur),
     }),
   )
 
