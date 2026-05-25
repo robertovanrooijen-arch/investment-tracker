@@ -12,6 +12,7 @@ import {
   YAxis,
 } from 'recharts'
 import { money } from '@/lib/format'
+import { getChartTicks, getTickFormatter } from '@/lib/domain/chart-ticks'
 import type { ChartPoint } from '@/lib/domain/chart-timeline'
 
 // ── View mode ──────────────────────────────────────────────────────────────
@@ -193,6 +194,10 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
           : transform(row.unrealized_profit_eur, base.unrealized_profit_eur),
     }))
   }, [filtered, viewMode])
+
+  const chartDates = useMemo(() => displayData.map((d) => d.date), [displayData])
+  const chartTicks = useMemo(() => getChartTicks(chartDates), [chartDates])
+  const tickFmt    = useMemo(() => getTickFormatter(chartDates), [chartDates])
 
   // ── Early exits ───────────────────────────────────────────────────────────
 
@@ -384,7 +389,9 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
 
                 <XAxis
                   dataKey="date"
-                  tickFormatter={formatAxisDate}
+                  ticks={chartTicks}
+                  tickFormatter={tickFmt}
+                  interval={0}
                   tick={{ fontSize: 12, fill: '#64748b' }}
                   stroke="#cbd5e1"
                 />

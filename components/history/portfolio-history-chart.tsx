@@ -11,6 +11,9 @@ import {
   YAxis,
 } from 'recharts'
 import { money } from '@/lib/format'
+import { getChartTicks, getTickFormatter } from '@/lib/domain/chart-ticks'
+import { downsampleForPreset, cutoffDateIso } from '@/lib/domain/chart-series'
+import type { Preset } from '@/lib/domain/chart-series'
 import type { InvestmentType } from '@/types/database'
 
 // ── Prop types ─────────────────────────────────────────────────────────────
@@ -20,6 +23,8 @@ export type PortfolioSnapshot = {
   total_value_eur: number
   total_invested_eur: number
   total_unrealized_eur: number
+  total_realized_eur: number
+  snapshot_source: string
 }
 
 export type InvSnapshot = {
@@ -29,9 +34,19 @@ export type InvSnapshot = {
   type: InvestmentType
 }
 
+export type LivePoint = {
+  date: string
+  totalValue: number
+  totalInvested: number    // ALL investments incl. cash
+  totalUnrealized: number
+  totalRealized: number
+  byType: { type: InvestmentType; value: number }[]
+}
+
 type Props = {
   portfolioSnapshots: PortfolioSnapshot[]
   invSnapshots: InvSnapshot[]
+  livePoint?: LivePoint
 }
 
 // ── View mode ──────────────────────────────────────────────────────────────
@@ -46,8 +61,6 @@ const VIEW_MODES: { key: ViewMode; label: string }[] = [
 
 // ── Time presets ───────────────────────────────────────────────────────────
 
-type Preset = '7d' | '30d' | '90d' | '1y' | 'all'
-
 const PRESETS: { key: Preset; label: string }[] = [
   { key: '7d',  label: '7d'  },
   { key: '30d', label: '30d' },
@@ -56,37 +69,25 @@ const PRESETS: { key: Preset; label: string }[] = [
   { key: 'all', label: 'All' },
 ]
 
-const DAYS_FOR_PRESET: Record<Exclude<Preset, 'all'>, number> = {
-  '7d': 7, '30d': 30, '90d': 90, '1y': 365,
-}
-
-function cutoffDateIso(days: number): string {
-  const d = new Date()
-  d.setUTCHours(0, 0, 0, 0)
-  d.setUTCDate(d.getUTCDate() - days)
-  return d.toISOString().slice(0, 10)
-}
-
 function filterByPreset(snaps: PortfolioSnapshot[], preset: Preset): PortfolioSnapshot[] {
   if (preset === 'all') return snaps
-  const cutoff = cutoffDateIso(DAYS_FOR_PRESET[preset])
+  const cutoff = cutoffDateIso(preset)
   return snaps.filter((s) => s.date >= cutoff)
 }
 
 // ── Series metadata ────────────────────────────────────────────────────────
 
-// Type breakdown order (cash excluded — it gets its own dedicated series)
 const TYPE_ORDER: Exclude<InvestmentType, 'cash'>[] = [
   'stock', 'ETF', 'crypto', 'commodity', 'real estate', 'custom',
 ]
 
 const TYPE_COLORS: Record<string, string> = {
-  stock:          '#3b82f6',  // blue-500
-  ETF:            '#8b5cf6',  // violet-500
-  crypto:         '#f59e0b',  // amber-500
-  commodity:      '#d97706',  // amber-600
-  'real estate':  '#ef4444',  // red-500
-  custom:         '#6b7280',  // slate-500
+  stock:          '#3b82f6',
+  ETF:            '#8b5cf6',
+  crypto:         '#f59e0b',
+  commodity:      '#d97706',
+  'real estate':  '#ef4444',
+  custom:         '#6b7280',
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -98,20 +99,15 @@ const TYPE_LABELS: Record<string, string> = {
   custom:        'Custom',
 }
 
-// Static derived series — always computed, togglable
+// Main series always read from portfolio_snapshots — accuracy guaranteed.
+// Breakdown series (cash, per-type) from investment_snapshots — optional, may
+// be absent for historical imported dates.
 const STATIC_SERIES = [
   {
     key: 'total_value_eur',
     label: 'Total value',
     color: '#0f172a',
     strokeWidth: 2.5,
-    strokeDasharray: undefined as string | undefined,
-  },
-  {
-    key: 'invested_assets_eur',
-    label: 'Invested assets value',
-    color: '#3730a3',
-    strokeWidth: 1.5,
     strokeDasharray: undefined as string | undefined,
   },
   {
@@ -123,8 +119,15 @@ const STATIC_SERIES = [
   },
   {
     key: 'total_profit_eur',
-    label: 'Unrealized profit',
+    label: 'Profit / loss',
     color: '#16a34a',
+    strokeWidth: 1.5,
+    strokeDasharray: undefined as string | undefined,
+  },
+  {
+    key: 'invested_assets_eur',
+    label: 'Invested assets',
+    color: '#3730a3',
     strokeWidth: 1.5,
     strokeDasharray: undefined as string | undefined,
   },
@@ -137,15 +140,7 @@ const STATIC_SERIES = [
   },
 ] as const
 
-type StaticKey = typeof STATIC_SERIES[number]['key']
-
 // ── Date formatters ────────────────────────────────────────────────────────
-
-function fmtAxisDate(date: string): string {
-  return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
-    month: 'short', day: 'numeric',
-  })
-}
 
 function fmtLongDate(date: string): string {
   return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
@@ -157,17 +152,14 @@ function fmtLongDate(date: string): string {
 
 function fmtValue(n: number, mode: ViewMode): string {
   if (!Number.isFinite(n)) return '—'
-  if (mode === 'absolute') return money(n, 'EUR')
-  if (mode === 'change_eur') {
-    return `${n >= 0 ? '+' : ''}${money(n, 'EUR')}`
-  }
-  // change_pct
+  if (mode === 'absolute')   return money(n, 'EUR')
+  if (mode === 'change_eur') return `${n >= 0 ? '+' : ''}${money(n, 'EUR')}`
   return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
 }
 
 function fmtYAxis(n: number, mode: ViewMode): string {
   if (!Number.isFinite(n)) return '—'
-  if (mode === 'absolute') return money(n, 'EUR')
+  if (mode === 'absolute')   return money(n, 'EUR')
   if (mode === 'change_eur') return `${n >= 0 ? '+' : ''}${money(n, 'EUR')}`
   return `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`
 }
@@ -225,17 +217,18 @@ function ChartTooltip({
 
 // ── Main component ─────────────────────────────────────────────────────────
 
-// Series visible by default. Type breakdown series and Cash are off by default.
+// Total value, cost basis, and profit/loss are always on.
+// Breakdown series (invested assets, cash, per-type) are off by default
+// because they may be absent for imported historical dates.
 const DEFAULT_VISIBLE = new Set([
   'total_value_eur',
-  'invested_assets_eur',
   'cost_basis_eur',
   'total_profit_eur',
 ])
 
-export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Props) {
-  const [preset,    setPreset]    = useState<Preset>('30d')
-  const [viewMode,  setViewMode]  = useState<ViewMode>('absolute')
+export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePoint }: Props) {
+  const [preset,       setPreset]       = useState<Preset>('30d')
+  const [viewMode,     setViewMode]     = useState<ViewMode>('absolute')
   const [visibleSeries, setVisibleSeries] = useState<Set<string>>(new Set(DEFAULT_VISIBLE))
 
   function toggleSeries(key: string) {
@@ -247,80 +240,104 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
     })
   }
 
-  // Types (excl. cash) that appear in any snapshot — stable across preset changes
+  // Types (excl. cash) present in any investment_snapshot or livePoint
   const activeTypes = useMemo<Exclude<InvestmentType, 'cash'>[]>(() => {
     const seen = new Set<string>()
     for (const row of invSnapshots) {
       if (row.type !== 'cash') seen.add(row.type)
     }
+    if (livePoint) {
+      for (const { type } of livePoint.byType) {
+        if (type !== 'cash') seen.add(type)
+      }
+    }
     return TYPE_ORDER.filter((t) => seen.has(t))
-  }, [invSnapshots])
+  }, [invSnapshots, livePoint])
 
+  // Step 1: date-range filter
   const filtered = useMemo(
     () => filterByPreset(portfolioSnapshots, preset),
     [portfolioSnapshots, preset],
   )
 
-  // Build chart rows: merge portfolio total with per-type aggregates from investment_snapshots
-  const chartData = useMemo(() => {
-    const filteredDates = new Set(filtered.map((s) => s.date))
+  // Step 2: downsample to one representative point per calendar bucket.
+  // This prevents annual anchors (2024-12-31, 2025-12-31) from appearing
+  // side-by-side with 25+ daily May points in the "All" view.
+  const sampled = useMemo(
+    () => downsampleForPreset(filtered, preset),
+    [filtered, preset],
+  )
 
-    // date → type → { value, cost }
-    type Agg = { value: number; cost: number }
+  // Step 3: build chart rows.
+  //   Main series  → ALWAYS portfolio_snapshots (total_value, cost_basis, profit).
+  //   Breakdown    → investment_snapshots or livePoint.byType (per-type, cash).
+  //
+  // This guarantees cost_basis and profit match Dashboard on every date,
+  // regardless of whether investment_snapshots exist for that date.
+  const chartData = useMemo(() => {
+    const sampledDates = new Set(sampled.map((s) => s.date))
+
+    type Agg = { value: number }
     const invByDate = new Map<string, Map<string, Agg>>()
 
     for (const row of invSnapshots) {
-      if (!filteredDates.has(row.date)) continue
+      if (!sampledDates.has(row.date)) continue
+      if (livePoint && row.date === livePoint.date) continue
       let typeMap = invByDate.get(row.date)
       if (!typeMap) { typeMap = new Map(); invByDate.set(row.date, typeMap) }
-      const prev = typeMap.get(row.type) ?? { value: 0, cost: 0 }
-      typeMap.set(row.type, {
-        value: prev.value + row.value_eur,
-        cost:  prev.cost  + row.remaining_cost_basis_eur,
-      })
+      const prev = typeMap.get(row.type) ?? { value: 0 }
+      typeMap.set(row.type, { value: prev.value + row.value_eur })
     }
 
-    return filtered.map((snap) => {
-      const typeMap = invByDate.get(snap.date) ?? new Map<string, Agg>()
+    return sampled.map((snap) => {
+      const isToday = livePoint != null && snap.date === livePoint.date
 
-      let cashValue      = 0
-      let investedValue  = 0
-      let investedCost   = 0
-
-      for (const [type, agg] of typeMap) {
-        if (type === 'cash') {
-          cashValue += agg.value
-        } else {
-          investedValue += agg.value
-          investedCost  += agg.cost
+      // Gather per-type values for breakdown series
+      const typeValues = new Map<string, number>()
+      if (isToday && livePoint) {
+        for (const { type, value } of livePoint.byType) {
+          typeValues.set(type, (typeValues.get(type) ?? 0) + value)
+        }
+      } else {
+        const typeMap = invByDate.get(snap.date)
+        if (typeMap) {
+          for (const [type, agg] of typeMap) {
+            typeValues.set(type, agg.value)
+          }
         }
       }
 
-      // For dates with no investment_snapshots (e.g. annual historical anchors),
-      // fall back to portfolio-level totals stored in portfolio_snapshots.
-      // invested_assets_eur stays 0 — no per-type breakdown available.
-      const hasInvSnaps = typeMap.size > 0
-      const costBasis       = hasInvSnaps ? investedCost               : snap.total_invested_eur
-      const unrealizedProfit = hasInvSnaps ? investedValue - investedCost : snap.total_unrealized_eur
+      let cashValue  = 0
+      let assetValue = 0
+      for (const [type, value] of typeValues) {
+        if (type === 'cash') cashValue += value
+        else assetValue += value
+      }
+      // When no investment_snapshots: best-effort — all value assumed non-cash
+      if (typeValues.size === 0) {
+        assetValue = snap.total_value_eur
+      }
 
       const row: Record<string, number | string> = {
         date:                snap.date,
+        // Main series: portfolio_snapshots only — always matches Dashboard
         total_value_eur:     snap.total_value_eur,
-        invested_assets_eur: investedValue,
-        cost_basis_eur:      costBasis,
-        total_profit_eur:    unrealizedProfit,
+        cost_basis_eur:      snap.total_invested_eur,
+        total_profit_eur:    snap.total_realized_eur + snap.total_unrealized_eur,
+        // Breakdown series: investment_snapshots / livePoint
+        invested_assets_eur: assetValue,
         cash_value_eur:      cashValue,
       }
 
       for (const type of activeTypes) {
-        row[type] = typeMap.get(type)?.value ?? 0
+        row[type] = typeValues.get(type) ?? 0
       }
 
       return row
     })
-  }, [filtered, invSnapshots, activeTypes])
+  }, [sampled, invSnapshots, activeTypes, livePoint])
 
-  // Apply view-mode transformation (relative to first visible data point)
+  // Apply view-mode transformation relative to first visible data point
   const displayData = useMemo(() => {
     if (viewMode === 'absolute' || chartData.length === 0) return chartData
 
@@ -334,11 +351,10 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
       const out: Record<string, number | string> = { date: row.date as string }
       for (const key of numericKeys) {
         const firstVal = Number(first[key]) || 0
-        const currVal  = Number(row[key])  || 0
+        const currVal  = Number(row[key])   || 0
         if (viewMode === 'change_eur') {
           out[key] = currVal - firstVal
         } else {
-          // change_pct: avoid divide-by-zero; 0 baseline → show 0
           out[key] = firstVal !== 0 ? ((currVal / firstVal) - 1) * 100 : 0
         }
       }
@@ -346,9 +362,16 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
     })
   }, [chartData, viewMode, activeTypes])
 
-  // Tooltip content — needs viewMode in closure
+  // X-axis: time-aware tick boundaries snapped to actual data points
+  const chartDates = useMemo(
+    () => displayData.map((d) => d.date as string),
+    [displayData],
+  )
+  const chartTicks = useMemo(() => getChartTicks(chartDates), [chartDates])
+  const tickFmt    = useMemo(() => getTickFormatter(chartDates), [chartDates])
+
   const renderTooltip = useCallback(
-    (props: object) => <ChartTooltip {...(props as any)} viewMode={viewMode} />,
+    (props: object) => <ChartTooltip {...(props as { active?: boolean; payload?: TooltipEntry[]; label?: string })} viewMode={viewMode} />,
     [viewMode],
   )
 
@@ -383,16 +406,16 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
     )
   }
 
-  // ── Summary header stats (always in absolute EUR) ──────────────────────
+  // ── Summary header stats ───────────────────────────────────────────────
 
-  const hasFiltered = filtered.length > 0
-  const start = hasFiltered ? filtered[0] : null
-  const end   = hasFiltered ? filtered[filtered.length - 1] : null
-  const delta = start && end ? end.total_value_eur - start.total_value_eur : 0
-  const pct   = start && end && start.total_value_eur !== 0
-    ? delta / start.total_value_eur
+  const hasSampled = sampled.length > 0
+  const startSnap  = hasSampled ? sampled[0] : null
+  const endSnap    = hasSampled ? sampled[sampled.length - 1] : null
+  const delta      = startSnap && endSnap ? endSnap.total_value_eur - startSnap.total_value_eur : 0
+  const headerPct  = startSnap && endSnap && startSnap.total_value_eur !== 0
+    ? delta / startSnap.total_value_eur
     : null
-  const tone  = delta > 0 ? 'positive' : delta < 0 ? 'negative' : 'neutral'
+  const tone = delta > 0 ? 'positive' : delta < 0 ? 'negative' : 'neutral'
 
   // ── Render ─────────────────────────────────────────────────────────────
 
@@ -407,18 +430,18 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
               Portfolio value
             </p>
             <p className="mt-1 text-3xl font-semibold tabular-nums text-slate-900">
-              {end ? money(end.total_value_eur, 'EUR') : '—'}
+              {endSnap ? money(endSnap.total_value_eur, 'EUR') : '—'}
             </p>
-            {hasFiltered && start && end ? (
-              start.date === end.date ? (
+            {hasSampled && startSnap && endSnap ? (
+              startSnap.date === endSnap.date ? (
                 <p className="mt-2 text-sm text-slate-500">Single snapshot in this timeframe</p>
               ) : (
                 <p className="mt-2 text-sm text-slate-600">
                   From{' '}
                   <span className="font-medium text-slate-900">
-                    {money(start.total_value_eur, 'EUR')}
+                    {money(startSnap.total_value_eur, 'EUR')}
                   </span>{' '}
-                  on {fmtLongDate(start.date)} ·{' '}
+                  on {fmtLongDate(startSnap.date)} ·{' '}
                   <span
                     className={
                       tone === 'positive'
@@ -429,8 +452,8 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
                     }
                   >
                     {delta >= 0 ? '+' : ''}{money(delta, 'EUR')}
-                    {pct !== null && (
-                      <> ({delta >= 0 ? '+' : ''}{(pct * 100).toFixed(2)}%)</>
+                    {headerPct !== null && (
+                      <> ({delta >= 0 ? '+' : ''}{(headerPct * 100).toFixed(2)}%)</>
                     )}
                   </span>
                 </p>
@@ -545,7 +568,9 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
 
                 <XAxis
                   dataKey="date"
-                  tickFormatter={fmtAxisDate}
+                  ticks={chartTicks}
+                  tickFormatter={tickFmt}
+                  interval={0}
                   tick={{ fontSize: 12, fill: '#64748b' }}
                   stroke="#cbd5e1"
                 />
@@ -562,7 +587,6 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
 
                 <Tooltip content={renderTooltip} />
 
-                {/* Static derived series */}
                 {STATIC_SERIES.map((s) =>
                   !visibleSeries.has(s.key) ? null : (
                     <Line
@@ -580,7 +604,6 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots }: Prop
                   ),
                 )}
 
-                {/* Per-type breakdown (cash excluded) */}
                 {activeTypes.map((type) =>
                   !visibleSeries.has(type) ? null : (
                     <Line

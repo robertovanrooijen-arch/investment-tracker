@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/page-header'
 import { StatCard } from '@/components/ui/stat-card'
-import { AllocationBreakdown } from '@/components/dashboard/allocation-breakdown'
+import { PortfolioBreakdownCharts } from '@/components/history/portfolio-breakdown-charts'
 import { RecentTransactions } from '@/components/dashboard/recent-transactions'
 import { RefreshPortfolioButton } from '@/components/dashboard/refresh-portfolio-button'
 import { money } from '@/lib/format'
@@ -12,7 +12,6 @@ import {
   pct,
 } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
-import { categoryColor, platformColor } from '@/lib/colors'
 import { normalizePlatformName } from '@/lib/domain/constants'
 import type { Investment, Transaction, InvestmentType } from '@/types/database'
 
@@ -59,14 +58,14 @@ export default async function DashboardPage() {
     investments,
     transactions,
     (i) => i.type,
-    fxRates
+    fxRates,
   )
 
   const byPlatform = computeAllocation(
     investments,
     transactions,
     (i) => normalizePlatformName(i.platform),
-    fxRates
+    fxRates,
   )
 
   const profitTone: 'positive' | 'negative' | 'neutral' =
@@ -76,7 +75,7 @@ export default async function DashboardPage() {
         ? 'negative'
         : 'neutral'
 
-  const isEmpty = investments.length === 0
+  const isEmpty    = investments.length === 0
   const hasHistory = metrics.totalEverInvested > 0
 
   return (
@@ -129,7 +128,7 @@ export default async function DashboardPage() {
                         : '—'
                     } · ${money(metrics.totalRealized, 'EUR')} realized · ${money(
                       metrics.totalUnrealized,
-                      'EUR'
+                      'EUR',
                     )} unrealized`
                   : 'Record a buy or deposit to start tracking gains'
               }
@@ -137,20 +136,11 @@ export default async function DashboardPage() {
             />
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <AllocationBreakdown
-              title="By category"
-              slices={byCategory}
-              colorFor={categoryColor}
-              emptyMessage="No value in your portfolio yet."
-            />
-            <AllocationBreakdown
-              title="By platform"
-              slices={byPlatform}
-              colorFor={platformColor}
-              emptyMessage="No value in your portfolio yet."
-            />
-          </div>
+          <PortfolioBreakdownCharts
+            byCategory={byCategory}
+            byPlatform={byPlatform}
+            liveMetrics={metrics}
+          />
 
           <RecentTransactions transactions={recent} />
         </>
