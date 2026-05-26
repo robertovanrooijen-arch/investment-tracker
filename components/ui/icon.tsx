@@ -8,6 +8,7 @@ export type IconName =
   | 'logout'
   | 'chevron'
   | 'recurring'
+  | 'projection'
 
 const paths: Record<IconName, ReactNode> = {
   dashboard: (
@@ -50,6 +51,12 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
       <path d="m7 22-4-4 4-4" />
       <path d="M21 13v1a4 4 0 0 1-4 4H3" />
+    </>
+  ),
+  projection: (
+    <>
+      <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
+      <polyline points="16 7 22 7 22 13" />
     </>
   ),
 }
