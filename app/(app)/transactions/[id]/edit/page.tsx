@@ -63,18 +63,20 @@ export default async function EditTransactionPage({
   }))
 
   const initial: TransactionInitial = {
-    id: tx.id,
-    investment_id: tx.investment_id,
-    type: tx.type,
-    date: tx.date,
-    quantity: tx.quantity,
-    price_per_unit: tx.price_per_unit,
-    amount: tx.amount,
-    fee: tx.fee,
-    notes: tx.notes,
-    price_currency: tx.price_currency,
-    fee_currency: tx.fee_currency,
-    fx_rate_to_eur: tx.fx_rate_to_eur,
+    id:                  tx.id,
+    investment_id:       tx.investment_id,
+    type:                tx.type,
+    date:                tx.date,
+    quantity:            tx.quantity,
+    price_per_unit:      tx.price_per_unit,
+    amount:              tx.amount,
+    fee:                 tx.fee,
+    notes:               tx.notes,
+    price_currency:      tx.price_currency,
+    fee_currency:        tx.fee_currency,
+    fx_rate_to_eur:      tx.fx_rate_to_eur,
+    is_contribution:     tx.is_contribution,
+    contribution_source: tx.contribution_source,
   }
 
   return (

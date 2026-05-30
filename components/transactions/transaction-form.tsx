@@ -43,6 +43,8 @@ export type TransactionInitial = {
   price_currency: string | null
   fee_currency: string | null
   fx_rate_to_eur: number | null
+  is_contribution: boolean
+  contribution_source: string | null
 }
 
 type FxRates = Record<string, number>
@@ -130,6 +132,10 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
 
   const [interestMode, setInterestMode] = useState<'fixed' | 'pct'>('fixed')
   const [interestPct, setInterestPct] = useState<string>('')
+
+  const [isContribution, setIsContribution] = useState<boolean>(
+    initial?.is_contribution ?? false
+  )
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -314,18 +320,22 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
         return
       }
 
+      const showContributionCheckbox = type === 'buy' || type === 'deposit'
+
       const payload = {
-        investment_id: investmentId,
+        investment_id:       investmentId,
         type,
         date,
-        quantity: finalQuantity,
-        price_per_unit: finalPrice,
-        amount: finalAmount,
-        fee: feeVal,
-        notes: notes.trim() || null,
-        price_currency: priceCurrency,
-        fee_currency: feeCurrency,
-        fx_rate_to_eur: fxRateToSave,
+        quantity:            finalQuantity,
+        price_per_unit:      finalPrice,
+        amount:              finalAmount,
+        fee:                 feeVal,
+        notes:               notes.trim() || null,
+        price_currency:      priceCurrency,
+        fee_currency:        feeCurrency,
+        fx_rate_to_eur:      fxRateToSave,
+        is_contribution:     showContributionCheckbox ? isContribution : false,
+        contribution_source: showContributionCheckbox && isContribution ? 'external' : null,
       }
 
       const { error: dbError } = initial
@@ -456,6 +466,9 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
               if (next !== 'interest') {
                 setInterestMode('fixed')
                 setInterestPct('')
+              }
+              if (next !== 'buy' && next !== 'deposit') {
+                setIsContribution(false)
               }
             }}
           >
@@ -670,6 +683,26 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
                 for exact accuracy.
               </p>
             </Field>
+          </div>
+        )}
+
+        {(type === 'buy' || type === 'deposit') && (
+          <div className="md:col-span-2">
+            <label className="flex items-start gap-3 cursor-pointer group">
+              <input
+                type="checkbox"
+                checked={isContribution}
+                onChange={(e) => setIsContribution(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-slate-300 accent-slate-900 cursor-pointer"
+              />
+              <span className="text-sm text-slate-700 leading-snug">
+                <span className="font-medium">New money from outside my portfolio</span>
+                <span className="block text-xs text-slate-400 mt-0.5">
+                  Check this if the funds came from your bank or income — not from selling
+                  or reinvesting existing portfolio assets.
+                </span>
+              </span>
+            </label>
           </div>
         )}
 
