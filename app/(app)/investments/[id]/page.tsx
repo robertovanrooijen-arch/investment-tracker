@@ -38,7 +38,7 @@ export default async function InvestmentDetailPage({
       .returns<Transaction[]>(),
     supabase
       .from('investment_snapshots')
-      .select('date, value_eur, remaining_cost_basis_eur, unrealized_profit_eur')
+      .select('date, value_eur, remaining_cost_basis_eur, unrealized_profit_eur, quantity')
       .eq('investment_id', id)
       .order('date', { ascending: true }),
     loadFxRates(supabase),
@@ -63,6 +63,7 @@ export default async function InvestmentDetailPage({
     value_eur: Number(row.value_eur),
     remaining_cost_basis_eur: Number(row.remaining_cost_basis_eur),
     unrealized_profit_eur: Number(row.unrealized_profit_eur),
+    quantity: row.quantity != null ? Number(row.quantity) : null,
   }))
 
   const profitTone: 'positive' | 'negative' | 'neutral' =

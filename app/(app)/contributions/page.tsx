@@ -5,6 +5,7 @@ import { PageHeader } from '@/components/ui/page-header'
 import { StatCard } from '@/components/ui/stat-card'
 import { money, fmtDate } from '@/lib/format'
 import type { CapitalFlowEntry } from '@/types/database'
+import { txToContribRow, getMonthKey, type ContribRow } from '@/lib/domain/contributions'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,7 +14,7 @@ const AVAILABLE_YEARS = [2025, 2026]
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function sumEur(entries: CapitalFlowEntry[]): number {
+function sumEur(entries: ContribRow[]): number {
   return entries.reduce((s, e) => s + Number(e.amount_eur), 0)
 }
 
@@ -25,6 +26,18 @@ function directionBadgeClass(d: string): string {
   return d === 'to_portfolio'
     ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
     : 'bg-rose-50 text-rose-700 border border-rose-200'
+}
+
+function sourceLabel(row: ContribRow): string {
+  if (row.source !== 'transaction') return 'Manual'
+  return row.direction === 'from_portfolio' ? 'Withdrawal' : 'Contribution'
+}
+
+function sourceBadgeClass(row: ContribRow): string {
+  if (row.source !== 'transaction') return 'bg-slate-100 text-slate-500 border border-slate-200'
+  return row.direction === 'from_portfolio'
+    ? 'bg-amber-50 text-amber-700 border border-amber-200'
+    : 'bg-blue-50 text-blue-700 border border-blue-200'
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────
@@ -46,15 +59,47 @@ export default async function ContributionsPage({
   } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const { data } = await supabase
-    .from('capital_flow_entries')
-    .select('*')
-    .eq('year', year)
-    .order('flow_date', { ascending: false })
-    .order('created_at', { ascending: false })
-    .returns<CapitalFlowEntry[]>()
+  const yearStart = `${year}-01-01`
+  const yearEnd   = `${year}-12-31`
 
-  const entries     = data ?? []
+  const [ledgerRes, txRes] = await Promise.all([
+    supabase
+      .from('capital_flow_entries')
+      .select('*')
+      .eq('year', year)
+      .returns<CapitalFlowEntry[]>(),
+    supabase
+      .from('transactions')
+      .select('*, investment:investments(platform)')
+      // is_contribution=true catches flagged buys/deposits; type=withdraw catches all withdrawals
+      .or('is_contribution.eq.true,type.eq.withdraw')
+      .gte('date', yearStart)
+      .lte('date', yearEnd),
+  ])
+
+  const ledgerRows: ContribRow[] = (ledgerRes.data ?? []).map((e) => ({
+    id: e.id,
+    flow_date: e.flow_date,
+    monthKey: getMonthKey(e.flow_date),
+    year: e.year,
+    platform: e.platform,
+    direction: e.direction,
+    amount_eur: Number(e.amount_eur),
+    source: 'ledger' as const,
+    notes: e.notes,
+    created_at: e.created_at,
+  }))
+
+  const txRows: ContribRow[] = (txRes.data ?? []).flatMap((tx) => {
+    const row = txToContribRow(tx as Parameters<typeof txToContribRow>[0])
+    return row ? [row] : []
+  })
+
+  const entries = [...ledgerRows, ...txRows].sort((a, b) => {
+    if (a.flow_date !== b.flow_date) return a.flow_date > b.flow_date ? -1 : 1
+    return a.created_at > b.created_at ? -1 : 1
+  })
+
   const inflows     = entries.filter((e) => e.direction === 'to_portfolio')
   const outflows    = entries.filter((e) => e.direction === 'from_portfolio')
 
@@ -84,9 +129,11 @@ export default async function ContributionsPage({
     fromP: 0,
   }))
   for (const e of entries) {
-    const idx = new Date(e.flow_date + 'T00:00:00').getMonth()
-    if (e.direction === 'to_portfolio')   monthly[idx].toP   += Number(e.amount_eur)
-    else                                   monthly[idx].fromP += Number(e.amount_eur)
+    const idx = Number(e.monthKey.slice(5, 7)) - 1   // 'YYYY-MM' → 0-based month index
+    if (idx >= 0 && idx < 12) {
+      if (e.direction === 'to_portfolio') monthly[idx].toP   += Number(e.amount_eur)
+      else                                monthly[idx].fromP += Number(e.amount_eur)
+    }
   }
 
   const hasEntries = entries.length > 0
@@ -290,6 +337,7 @@ export default async function ContributionsPage({
                     <th className={`text-left  px-4       ${thClass}`}>Platform</th>
                     <th className={`text-left  px-4       ${thClass} hidden sm:table-cell`}>Direction</th>
                     <th className={`text-right px-4       ${thClass}`}>Amount</th>
+                    <th className={`text-left  px-4       ${thClass} hidden sm:table-cell`}>Source</th>
                     <th className={`text-left  px-5 md:px-6 ${thClass} hidden md:table-cell`}>Notes</th>
                   </tr>
                 </thead>
@@ -313,6 +361,11 @@ export default async function ContributionsPage({
                           isIn ? 'text-emerald-700' : 'text-rose-700'
                         }`}>
                           {isIn ? '+' : '−'}{money(Number(e.amount_eur), 'EUR')}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap hidden sm:table-cell">
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${sourceBadgeClass(e)}`}>
+                            {sourceLabel(e)}
+                          </span>
                         </td>
                         <td className="px-5 md:px-6 py-3 text-slate-400 text-xs hidden md:table-cell max-w-[200px] truncate">
                           {e.notes ?? '—'}

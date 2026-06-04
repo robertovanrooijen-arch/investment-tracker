@@ -55,13 +55,13 @@ function sortChron(txs: Transaction[]): Transaction[] {
 export function buildInvestmentChartTimeline(
   investment: Investment,
   transactions: Transaction[],
-  snapshots: Array<{ date: string; value_eur: number }>,
+  snapshots: Array<{ date: string; value_eur: number; quantity?: number | null }>,
   currentMetrics: { currentValue: number; remainingCostBasis: number; unrealizedProfit: number },
   todayIso: string,
   fxRates?: FxRates,
 ): ChartPoint[] {
   const isUnit = hasUnits(investment.type)
-  const snapshotMap = new Map(snapshots.map((s) => [s.date, s.value_eur]))
+  const snapshotMap = new Map(snapshots.map((s) => [s.date, s]))
 
   const allDates = [
     ...new Set([...snapshotMap.keys(), ...transactions.map((t) => t.date), todayIso]),
@@ -142,15 +142,31 @@ export function buildInvestmentChartTimeline(
     // Historical value priority:
     // 1. Transaction date (buy/sell): post-transaction quantity × transaction price.
     //    Snapshot is skipped so the buy/sell effect is visible on that date.
-    // 2. Snapshot exists: authoritative end-of-day market value from the cron.
-    // 3. Carry forward: unit asset with known price but no snapshot.
+    // 2. Snapshot exists AND quantity matches walked sharesHeld: authoritative
+    //    end-of-day market value from the cron.
+    //    If the snapshot's stored quantity differs from sharesHeld by more than
+    //    0.1%, the snapshot pre-dates a backfilled transaction and is stale —
+    //    fall through to carry-forward instead of showing a false drop.
+    // 3. Carry forward: unit asset with known price but no (valid) snapshot.
     // 4. null: no usable price data.
     let valueEur: number | null
 
     if (isUnit && txPriceEurPerUnit !== null && sharesHeld > 0) {
       valueEur = sharesHeld * txPriceEurPerUnit
     } else if (snapshotMap.has(date)) {
-      valueEur = snapshotMap.get(date)!
+      const snap = snapshotMap.get(date)!
+      const stale =
+        isUnit &&
+        snap.quantity != null &&
+        sharesHeld > 0 &&
+        Math.abs(snap.quantity - sharesHeld) > sharesHeld * 0.001
+      if (!stale) {
+        valueEur = snap.value_eur
+      } else if (sharesHeld > 0 && lastPriceEurPerUnit > 0) {
+        valueEur = sharesHeld * lastPriceEurPerUnit
+      } else {
+        valueEur = null
+      }
     } else if (isUnit && sharesHeld > 0 && lastPriceEurPerUnit > 0) {
       valueEur = sharesHeld * lastPriceEurPerUnit
     } else {
