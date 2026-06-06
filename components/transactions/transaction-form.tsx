@@ -320,7 +320,7 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
         return
       }
 
-      const showContributionCheckbox = type === 'buy' || type === 'deposit'
+      const showContributionCheckbox = type === 'buy' || type === 'deposit' || type === 'withdraw'
 
       const payload = {
         investment_id:       investmentId,
@@ -686,7 +686,7 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
           </div>
         )}
 
-        {(type === 'buy' || type === 'deposit') && (
+        {(type === 'buy' || type === 'deposit' || type === 'withdraw') && (
           <div className="md:col-span-2">
             <label className="flex items-start gap-3 cursor-pointer group">
               <input
@@ -696,11 +696,23 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
                 className="mt-0.5 h-4 w-4 rounded border-slate-300 accent-slate-900 cursor-pointer"
               />
               <span className="text-sm text-slate-700 leading-snug">
-                <span className="font-medium">New money from outside my portfolio</span>
-                <span className="block text-xs text-slate-400 mt-0.5">
-                  Check this if the funds came from your bank or income — not from selling
-                  or reinvesting existing portfolio assets.
-                </span>
+                {type === 'withdraw' ? (
+                  <>
+                    <span className="font-medium">Counts as money taken out of my portfolio</span>
+                    <span className="block text-xs text-slate-400 mt-0.5">
+                      Check this if the cash left your portfolio for good (withdrawn to bank/spending).
+                      Leave unchecked for internal transfers — e.g. withdrawing to buy on another platform.
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="font-medium">New money from outside my portfolio</span>
+                    <span className="block text-xs text-slate-400 mt-0.5">
+                      Check this if the funds came from your bank or income — not from selling
+                      or reinvesting existing portfolio assets.
+                    </span>
+                  </>
+                )}
               </span>
             </label>
           </div>

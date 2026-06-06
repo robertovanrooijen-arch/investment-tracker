@@ -71,8 +71,8 @@ export default async function ContributionsPage({
     supabase
       .from('transactions')
       .select('*, investment:investments(platform)')
-      // is_contribution=true catches flagged buys/deposits; type=withdraw catches all withdrawals
-      .or('is_contribution.eq.true,type.eq.withdraw')
+      // Only include transactions explicitly marked as a contribution/outflow
+      .eq('is_contribution', true)
       .gte('date', yearStart)
       .lte('date', yearEnd),
   ])
