@@ -13,6 +13,7 @@ import {
 } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
 import { normalizePlatformName } from '@/lib/domain/constants'
+import { todayLocalIso, computeDailyChange, type DailyChange } from '@/lib/domain/snapshot'
 import type { Investment, Transaction, InvestmentType } from '@/types/database'
 
 type TxWithInvestment = Transaction & {
@@ -23,10 +24,29 @@ type TxWithInvestment = Transaction & {
   } | null
 }
 
+function dailyChangeText(change: DailyChange): string {
+  if (!change) return 'No previous snapshot yet'
+  const sign = change.value > 0 ? '+' : ''
+  const pctText =
+    change.percent !== null
+      ? ` (${change.percent > 0 ? '+' : ''}${change.percent.toFixed(2)}%)`
+      : ''
+  return `Today: ${sign}${money(change.value, 'EUR')}${pctText}`
+}
+
+function dailyChangeClass(change: DailyChange): string {
+  if (!change) return 'text-slate-400'
+  if (change.value > 0) return 'text-emerald-600'
+  if (change.value < 0) return 'text-rose-600'
+  return 'text-slate-500'
+}
+
 export default async function DashboardPage() {
   const supabase = await createClient()
 
-  const [invRes, txRes, recentRes, fxRes, latestSnapRes] = await Promise.all([
+  const todayIso = todayLocalIso()
+
+  const [invRes, txRes, recentRes, fxRes, latestSnapRes, prevSnapRes] = await Promise.all([
     supabase.from('investments').select('*').returns<Investment[]>(),
     supabase.from('transactions').select('*').returns<Transaction[]>(),
     supabase
@@ -43,6 +63,13 @@ export default async function DashboardPage() {
       .order('date', { ascending: false })
       .limit(1)
       .maybeSingle(),
+    supabase
+      .from('portfolio_snapshots')
+      .select('total_value_eur')
+      .lt('date', todayIso)
+      .order('date', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ])
 
   const investments = invRes.data ?? []
@@ -51,8 +78,10 @@ export default async function DashboardPage() {
   const fxRates = fxRes.rates
   const latestSnap = latestSnapRes.data as { updated_at: string } | null
   const lastRefreshedAt = latestSnap?.updated_at ?? null
+  const previousSnap = prevSnapRes.data as { total_value_eur: number } | null
 
   const metrics = computePortfolioMetrics(investments, transactions, fxRates)
+  const dailyChange: DailyChange = computeDailyChange(metrics.totalValue, previousSnap)
 
   const byCategory = computeAllocation(
     investments,
@@ -110,7 +139,15 @@ export default async function DashboardPage() {
             <StatCard
               label="Portfolio value"
               value={money(metrics.totalValue, 'EUR')}
-              hint="Converted to EUR"
+              hint={
+                <>
+                  Converted to EUR
+                  <br />
+                  <span className={dailyChangeClass(dailyChange)}>
+                    {dailyChangeText(dailyChange)}
+                  </span>
+                </>
+              }
             />
             <StatCard
               label="Total invested"
