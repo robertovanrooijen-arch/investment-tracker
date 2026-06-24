@@ -10,7 +10,12 @@ import type { Transaction } from '@/types/database'
 
 export const dynamic = 'force-dynamic'
 
-export default async function NewTransactionPage() {
+export default async function NewTransactionPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ investmentId?: string }>
+}) {
+  const { investmentId } = await searchParams
   const supabase = await createClient()
 
   const {
@@ -22,7 +27,7 @@ export default async function NewTransactionPage() {
     await Promise.all([
       supabase
         .from('investments')
-        .select('id, name, type, current_value, currency, quantity_unit')
+        .select('id, name, type, current_value, currency, quantity_unit, platform')
         .eq('user_id', user.id)
         .order('name', { ascending: true }),
       supabase
@@ -45,7 +50,13 @@ export default async function NewTransactionPage() {
     quantityHeld: heldQuantity(inv.id, allTxs),
     currency: inv.currency ?? 'EUR',
     quantity_unit: inv.quantity_unit ?? null,
+    platform: inv.platform ?? null,
   }))
+
+  const defaultInvestmentId =
+    investmentId && options.some((o) => o.id === investmentId)
+      ? investmentId
+      : undefined
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -58,7 +69,11 @@ export default async function NewTransactionPage() {
         </p>
       </div>
 
-      <TransactionForm investments={options} fxRates={fxRates} />
+      <TransactionForm
+        investments={options}
+        fxRates={fxRates}
+        defaultInvestmentId={defaultInvestmentId}
+      />
     </div>
   )
 }

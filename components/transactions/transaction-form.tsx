@@ -28,6 +28,7 @@ export type InvestmentOption = {
   current_value: number | null
   currency: string
   quantity_unit?: string | null
+  platform?: string | null
 }
 
 export type TransactionInitial = {
@@ -53,6 +54,7 @@ type Props = {
   investments: InvestmentOption[]
   initial?: TransactionInitial
   fxRates: FxRates
+  defaultInvestmentId?: string
 }
 
 const COMMODITY_TX_TYPES: TxType[] = ['buy', 'sell']
@@ -101,12 +103,17 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10)
 }
 
-export function TransactionForm({ investments, initial, fxRates }: Props) {
+export function TransactionForm({
+  investments,
+  initial,
+  fxRates,
+  defaultInvestmentId,
+}: Props) {
   const router = useRouter()
   const supabase = createClient()
 
   const [investmentId, setInvestmentId] = useState<string>(
-    initial?.investment_id ?? investments[0]?.id ?? ''
+    initial?.investment_id ?? defaultInvestmentId ?? investments[0]?.id ?? ''
   )
   const [type, setType] = useState<TxType>(initial?.type ?? 'buy')
   const [date, setDate] = useState<string>(initial?.date ?? todayISO())
@@ -449,7 +456,7 @@ export function TransactionForm({ investments, initial, fxRates }: Props) {
           >
             {investments.map((inv) => (
               <option key={inv.id} value={inv.id}>
-                {inv.name} ({inv.currency})
+                {inv.name} ({inv.currency}){inv.platform ? ` · ${inv.platform}` : ''}
               </option>
             ))}
           </select>

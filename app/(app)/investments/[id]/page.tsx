@@ -108,7 +108,7 @@ export default async function InvestmentDetailPage({
           <div className="flex flex-wrap items-center gap-2">
             {!m.isClosed && (
               <Link
-                href={`/transactions/new?investment=${investment.id}`}
+                href={`/transactions/new?investmentId=${investment.id}`}
                 className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-900 hover:bg-slate-50"
               >
                 + Record activity
@@ -331,7 +331,7 @@ export default async function InvestmentDetailPage({
           </h2>
           {!m.isClosed && (
             <Link
-              href={`/transactions/new?investment=${investment.id}`}
+              href={`/transactions/new?investmentId=${investment.id}`}
               className="text-sm text-slate-600 hover:text-slate-900"
             >
               + Record activity
