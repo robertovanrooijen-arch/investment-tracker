@@ -19,7 +19,7 @@ function sortChronologically(txs: Transaction[]): Transaction[] {
  *  - fee_currency = price_currency      → use the row's fx_rate_to_eur snapshot.
  *  - other / NULL                        → fall back to the live rate.
  */
-function txFeeInEur(tx: Transaction, fxRates?: FxRates): number {
+export function txFeeInEur(tx: Transaction, fxRates?: FxRates): number {
   const feeAmount = tx.fee ?? 0
   if (feeAmount === 0) return 0
 
@@ -44,7 +44,7 @@ function txFeeInEur(tx: Transaction, fxRates?: FxRates): number {
  * Convert a transaction's fee to its price_currency, so it can be added to
  * native cost basis math. Goes via EUR when fee_currency != price_currency.
  */
-function txFeeInPriceCurrency(tx: Transaction, fxRates?: FxRates): number {
+export function txFeeInPriceCurrency(tx: Transaction, fxRates?: FxRates): number {
   const feeAmount = tx.fee ?? 0
   if (feeAmount === 0) return 0
 
