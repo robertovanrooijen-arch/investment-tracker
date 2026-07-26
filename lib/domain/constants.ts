@@ -1,4 +1,5 @@
 import type {
+  Investment,
   InvestmentType,
   CommodityKind,
   QuantityUnit,
@@ -77,4 +78,18 @@ export function hasUnits(type: InvestmentType): boolean {
     type === 'crypto' ||
     type === 'commodity'
   )
+}
+
+/**
+ * Cash-like holdings (uninvested broker cash, "free space" balances) don't
+ * have a cost basis, so current value minus zero cost basis is not profit —
+ * it's just the balance. Matched by type first; the name check is a fallback
+ * for cash sitting in a row that wasn't tagged 'cash'.
+ *
+ * Shared by calculations.ts (computePortfolioMetrics) and year-analysis.ts —
+ * lives here, not in either of those, so neither has to import the other.
+ */
+export function isCashLikeInvestment(investment: Investment): boolean {
+  if (investment.type === 'cash') return true
+  return /vrije?\s*ruimte|free\s*cash|cash\s*balance/i.test(investment.name)
 }

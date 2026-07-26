@@ -1,5 +1,5 @@
 import type { Investment, Transaction } from '@/types/database'
-import { hasUnits } from '@/lib/domain/constants'
+import { hasUnits, isCashLikeInvestment } from '@/lib/domain/constants'
 import type { FxRates } from '@/lib/domain/fx'
 
 // ---------- Sorting ----------
@@ -338,11 +338,18 @@ export function computePortfolioMetrics(
 
   for (const inv of investments) {
     const m = computeInvestmentMetrics(inv, transactions, fxRates)
+    // Cash-like holdings (uninvested broker cash, "free space" balances)
+    // still count toward portfolio value/invested — they're real money in
+    // the portfolio. They're excluded from realized/unrealized P/L: a cash
+    // balance with no matching deposit/withdraw transactions has no cost
+    // basis, so currentValue - 0 is not profit, it's just the balance.
     totalValue += m.currentValue
     totalInvested += m.remainingCostBasis
-    totalRealized += m.realizedProfit
-    totalUnrealized += m.unrealizedProfit
     totalEverInvested += m.totalEverInvested
+    if (!isCashLikeInvestment(inv)) {
+      totalRealized += m.realizedProfit
+      totalUnrealized += m.unrealizedProfit
+    }
   }
 
   const totalProfit = totalRealized + totalUnrealized

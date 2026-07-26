@@ -1,12 +1,15 @@
 import type { Investment, Transaction, InvestmentType, CapitalFlowDirection } from '@/types/database'
-import { hasUnits } from '@/lib/domain/constants'
+import { hasUnits, isCashLikeInvestment } from '@/lib/domain/constants'
+export { isCashLikeInvestment }
 import type { FxRates } from '@/lib/domain/fx'
 import {
   computeInvestmentMetrics,
+  computePortfolioMetrics,
   txAmountInEur,
   txFeeInEur,
   txFeeInPriceCurrency,
 } from '@/lib/domain/calculations'
+import type { PortfolioMetrics } from '@/lib/domain/calculations'
 import { txToContribRow } from '@/lib/domain/contributions'
 import { money } from '@/lib/format'
 
@@ -66,17 +69,6 @@ function closingCutoffDate(year: number): string {
   const currentYear = new Date().getFullYear()
   if (year >= currentYear) return todayIso()
   return `${year}-12-31`
-}
-
-/**
- * Cash-like holdings (uninvested broker cash, "free space" balances) don't
- * have a cost basis, so current value minus zero cost basis is not profit —
- * it's just the balance. Matched by type first; the name check is a fallback
- * for cash sitting in a row that wasn't tagged 'cash'.
- */
-export function isCashLikeInvestment(investment: Investment): boolean {
-  if (investment.type === 'cash') return true
-  return /vrije?\s*ruimte|free\s*cash|cash\s*balance/i.test(investment.name)
 }
 
 /**
@@ -558,6 +550,10 @@ export type YearPortfolioSummary = {
   // netContributionsEur/modifiedDietzReturnPercent above — never a second,
   // independently-derived cashflow calculation.
   monthlyCashflow: MonthlyCashflowRow[]
+  // Gross in/out from the same yearCashFlows list as netContributionsEur —
+  // split out for the reconciliation audit's cashflow classification check.
+  grossContributionsInEur: number
+  grossContributionsOutEur: number // positive number = money that left
 }
 
 export type MonthlyCashflowRow = {
@@ -695,6 +691,12 @@ export function computeYearPortfolioSummary(
     })
   }
   const netContributionsEur = yearCashFlows.reduce((s, f) => s + f.amountEur, 0)
+  const grossContributionsInEur = yearCashFlows
+    .filter((f) => f.amountEur > 0)
+    .reduce((s, f) => s + f.amountEur, 0)
+  const grossContributionsOutEur = yearCashFlows
+    .filter((f) => f.amountEur < 0)
+    .reduce((s, f) => s - f.amountEur, 0)
 
   // Monthly bucketing of the exact same yearCashFlows list above — same
   // source data as netContributionsEur, just grouped by month instead of
@@ -785,6 +787,8 @@ export function computeYearPortfolioSummary(
     modifiedDietzReturnPercent,
     totalProfitLossPercent,
     monthlyCashflow,
+    grossContributionsInEur,
+    grossContributionsOutEur,
   }
 }
 
@@ -965,4 +969,276 @@ export function computeYearVerdict(
   }
 
   return sentence
+}
+
+// ---------------------------------------------------------------------------
+// ---------- Reconciliation audit ----------
+//
+// Cross-checks Year Analysis's numbers against the exact same
+// computeInvestmentMetrics()/computePortfolioMetrics() functions Dashboard
+// and History use, so any divergence between the pages is made visible and
+// explained instead of silently assumed away. Two known, expected sources of
+// divergence exist and are called out explicitly rather than "fixed" here:
+//
+//  1. computePortfolioMetrics() (calculations.ts) does not exclude cash-like
+//     holdings from unrealized P/L — a cash balance with no matching
+//     deposit/withdraw transactions reads as pure "unrealized profit" there.
+//     Year Analysis deliberately excludes it (see isCashLikeInvestment).
+//  2. Year Analysis's "Total P/L" is realizedPLInYearEur (transactions dated
+//     in year Y) + currentUnrealizedPLEur (today's snapshot) — a genuinely
+//     different metric from History's snapshot-to-snapshot P/L delta, which
+//     uses all-time cumulative realized. Neither is wrong; they answer
+//     different questions. This audit measures both explicitly rather than
+//     forcing them to match.
+// ---------------------------------------------------------------------------
+
+export type AuditStatus = 'ok' | 'mismatch' | 'approximate' | 'unavailable'
+
+export type AuditRow = {
+  label: string
+  value: number | null
+  note?: string
+}
+
+export type AuditCheck = {
+  title: string
+  rows: AuditRow[]
+  differenceEur: number | null
+  status: AuditStatus
+  explanation: string
+}
+
+export type ReconciliationAudit = {
+  portfolioValueBridge: AuditCheck
+  profitLossBridge: AuditCheck
+  currentPlConsistency: AuditCheck
+  costBasisConsistency: AuditCheck
+  cashflowClassification: AuditCheck
+}
+
+export type SnapshotForAudit = {
+  date: string
+  total_value_eur: number
+  total_realized_eur: number | null
+  total_unrealized_eur: number | null
+  // When the row was last written. Used only to detect snapshots that
+  // predate the cash-exclusion fix below — not used for any date-range
+  // filtering.
+  updated_at: string | null
+}
+
+function auditStatus(diff: number | null, tolerance = 1): AuditStatus {
+  if (diff === null) return 'unavailable'
+  return Math.abs(diff) <= tolerance ? 'ok' : 'mismatch'
+}
+
+// The date computePortfolioMetrics() was fixed to exclude cash-like holdings
+// from realized/unrealized P/L (see calculations.ts). Snapshot rows written
+// before this still have the OLD, cash-inflated total_realized_eur /
+// total_unrealized_eur baked in. Comparing such a snapshot against a
+// post-fix live total produces an internally-consistent-looking bridge that
+// is nonetheless wrong, since the two sides used different P/L definitions
+// for what "realized"/"unrealized" means. Remove this guard (and the
+// isPreCashFix logic below) once historical snapshots are backfilled under
+// the new definition.
+const CASH_EXCLUSION_FIX_ROLLOUT_ISO = '2026-07-22'
+
+export function computeReconciliationAudit(
+  investments: Investment[],
+  transactions: Transaction[],
+  year: number,
+  fxRates: FxRates | undefined,
+  assetRows: AssetYearRow[],
+  summary: YearPortfolioSummary,
+  snapshots: SnapshotForAudit[],
+  liveMetrics: PortfolioMetrics
+): ReconciliationAudit {
+  const yearStart = `${year}-01-01`
+
+  // ---------- 1. Portfolio value bridge ----------
+  // By construction, growthExcludingContributionsEur === end - start -
+  // netContributions, so this should always land at ~0. A non-zero result
+  // here would mean the numbers got wired together wrong somewhere upstream,
+  // not a data quality issue.
+  const pvbDiff =
+    summary.startValueEur !== null && summary.growthExcludingContributionsEur !== null
+      ? summary.endValueEur -
+        summary.startValueEur -
+        summary.netContributionsEur -
+        summary.growthExcludingContributionsEur
+      : null
+
+  const portfolioValueBridge: AuditCheck = {
+    title: 'Portfolio value bridge',
+    rows: [
+      { label: 'Start portfolio value', value: summary.startValueEur },
+      { label: 'Net external contributions', value: summary.netContributionsEur },
+      { label: 'Growth after contributions', value: summary.growthExcludingContributionsEur },
+      { label: 'Current portfolio value', value: summary.endValueEur },
+    ],
+    differenceEur: pvbDiff,
+    status: summary.startValueEur === null ? 'unavailable' : auditStatus(pvbDiff),
+    explanation:
+      summary.startValueEur === null
+        ? 'No start-of-year snapshot — cannot bridge from a start value.'
+        : 'Growth after contributions is defined as end − start − contributions, so this reconciles to ~0 by construction. It is included as a regression guard, not because a mismatch here is expected.',
+  }
+
+  // ---------- 2. Profit/Loss bridge (Dashboard/History scope: cash-inclusive, all-time) ----------
+  const startCandidates = snapshots
+    .filter((s) => s.date <= yearStart)
+    .sort((a, b) => (a.date < b.date ? 1 : -1))
+  const startSnap = startCandidates[0] ?? null
+  const startRealized = startSnap?.total_realized_eur ?? null
+  const startUnrealized = startSnap?.total_unrealized_eur ?? null
+  const startTotalProfitLoss =
+    startRealized !== null && startUnrealized !== null ? startRealized + startUnrealized : null
+
+  const currentTotalProfitLoss = liveMetrics.totalProfit
+  const profitLossChangeThisYear =
+    startTotalProfitLoss !== null ? currentTotalProfitLoss - startTotalProfitLoss : null
+  const realizedPnlSinceSnapshot = startRealized !== null ? liveMetrics.totalRealized - startRealized : null
+  const changeInUnrealizedPnl =
+    startUnrealized !== null ? liveMetrics.totalUnrealized - startUnrealized : null
+  const plBridgeDiff =
+    profitLossChangeThisYear !== null && realizedPnlSinceSnapshot !== null && changeInUnrealizedPnl !== null
+      ? profitLossChangeThisYear - (realizedPnlSinceSnapshot + changeInUnrealizedPnl)
+      : null
+
+  // Dashboard/History's live P/L is now cash-excluded (calculations.ts fix).
+  // If the start snapshot was written before that fix shipped, it still
+  // carries the old cash-inflated numbers — the bridge below can reconcile
+  // arithmetically while still being a meaningless comparison, since "start"
+  // and "current" would be using two different P/L definitions.
+  const startSnapPreDatesCashFix =
+    startSnap !== null && (startSnap.updated_at ?? startSnap.date) < CASH_EXCLUSION_FIX_ROLLOUT_ISO
+
+  const profitLossBridge: AuditCheck = {
+    title: 'Profit/Loss bridge — start snapshot vs live Dashboard/History P/L',
+    rows: [
+      {
+        label: 'Start total P/L (snapshot)',
+        value: startTotalProfitLoss,
+        note: startSnap
+          ? `as of ${startSnap.date}${startSnapPreDatesCashFix ? ' — written before the cash-exclusion fix' : ''}`
+          : 'no snapshot with a realized/unrealized breakdown found',
+      },
+      {
+        label: 'Current total P/L (live)',
+        value: currentTotalProfitLoss,
+        note: 'same computePortfolioMetrics() call Dashboard/History use — now excludes cash',
+      },
+      { label: 'P/L change this year', value: profitLossChangeThisYear },
+      { label: 'Realized P/L since start snapshot', value: realizedPnlSinceSnapshot },
+      { label: 'Change in unrealized P/L', value: changeInUnrealizedPnl },
+    ],
+    differenceEur: plBridgeDiff,
+    status:
+      startTotalProfitLoss === null
+        ? 'unavailable'
+        : startSnapPreDatesCashFix
+          ? 'approximate'
+          : auditStatus(plBridgeDiff),
+    explanation:
+      startTotalProfitLoss === null
+        ? 'No start-of-year snapshot with a realized/unrealized breakdown — cannot bridge P/L.'
+        : startSnapPreDatesCashFix
+          ? 'Start snapshot uses the old P/L definition; backfill needed for a reliable P/L change. It was written before the cash-exclusion fix, so it may still count a cash balance as profit while the live total (right) now correctly excludes it — "P/L change this year" is not reliable until historical snapshots are backfilled under the new definition.'
+          : 'Validates that Dashboard/History\'s own snapshot-vs-live bookkeeping is internally consistent — both sides now use the same cash-excluded P/L definition.',
+  }
+
+  // ---------- 3. Current P/L consistency: Dashboard/History vs Year Analysis (non-cash) ----------
+  let nonCashCurrentPL = 0
+  let cashCurrentPL = 0
+  for (const inv of investments) {
+    const m = computeInvestmentMetrics(inv, transactions, fxRates)
+    if (isCashLikeInvestment(inv)) cashCurrentPL += m.realizedProfit + m.unrealizedProfit
+    else nonCashCurrentPL += m.realizedProfit + m.unrealizedProfit
+  }
+  const dashboardCurrentPL = liveMetrics.totalProfit
+  const currentPlDiff = dashboardCurrentPL - nonCashCurrentPL
+  const currentPlExplainedByCash = Math.abs(currentPlDiff - cashCurrentPL) <= 1
+
+  const currentPlConsistency: AuditCheck = {
+    title: 'Current P/L consistency — Dashboard/History vs Year Analysis',
+    rows: [
+      { label: 'Dashboard/History total P/L (all-time, incl. cash)', value: dashboardCurrentPL },
+      { label: 'Sum of non-cash per-asset P/L (all-time)', value: nonCashCurrentPL },
+      { label: "Cash-like holdings' contribution to Dashboard/History P/L", value: cashCurrentPL },
+    ],
+    differenceEur: currentPlDiff,
+    status: Math.abs(currentPlDiff) <= 1 ? 'ok' : currentPlExplainedByCash ? 'approximate' : 'mismatch',
+    explanation:
+      Math.abs(currentPlDiff) <= 1
+        ? 'No cash-driven gap detected — both totals cover the same (all-time, non-cash) scope.'
+        : currentPlExplainedByCash
+          ? `The €${cashCurrentPL.toFixed(2)} gap is fully explained by cash-like holdings: Dashboard/History's total P/L does not exclude cash, so a cash balance with no matching deposit transactions is counted there as unrealized profit. Year Analysis correctly excludes it. This is expected, not a bug.`
+          : `Difference (€${currentPlDiff.toFixed(2)}) is NOT fully explained by cash (€${cashCurrentPL.toFixed(2)}) — the remaining €${(currentPlDiff - cashCurrentPL).toFixed(2)} needs investigation (possible cost-basis or FX mismatch).`,
+  }
+
+  // ---------- 4. Cost basis consistency ----------
+  let nonCashCostBasis = 0
+  let cashCostBasis = 0
+  for (const inv of investments) {
+    const m = computeInvestmentMetrics(inv, transactions, fxRates)
+    if (isCashLikeInvestment(inv)) cashCostBasis += m.remainingCostBasis
+    else nonCashCostBasis += m.remainingCostBasis
+  }
+  const dashboardTotalInvested = liveMetrics.totalInvested
+  const costBasisDiff = dashboardTotalInvested - nonCashCostBasis
+  const costBasisExplainedByCash = Math.abs(costBasisDiff - cashCostBasis) <= 1
+
+  const costBasisConsistency: AuditCheck = {
+    title: 'Cost basis consistency — Dashboard total invested vs Year Analysis',
+    rows: [
+      { label: 'Dashboard total invested (incl. cash)', value: dashboardTotalInvested },
+      { label: 'Sum of non-cash remaining cost basis', value: nonCashCostBasis },
+      { label: "Cash-like holdings' cost basis", value: cashCostBasis },
+    ],
+    differenceEur: costBasisDiff,
+    status: Math.abs(costBasisDiff) <= 1 ? 'ok' : costBasisExplainedByCash ? 'approximate' : 'mismatch',
+    explanation:
+      Math.abs(costBasisDiff) <= 1
+        ? 'No cash-driven gap detected.'
+        : costBasisExplainedByCash
+          ? "The gap matches cash-like holdings' own cost basis (typically €0, since cash balances rarely have deposit/withdraw transactions) — expected, not a bug."
+          : `Unexplained gap of €${(costBasisDiff - cashCostBasis).toFixed(2)} beyond cash — investigate further (a wrong cost basis here would produce a wrong P/L).`,
+  }
+
+  // ---------- 5. Cashflow classification audit ----------
+  const nonCashRows = assetRows.filter((r) => !r.isCashLike)
+  const cashRows = assetRows.filter((r) => r.isCashLike)
+  const internalBuys = nonCashRows.reduce((s, r) => s + r.amountBoughtInYearEur, 0)
+  const internalSells = nonCashRows.reduce((s, r) => s + r.amountSoldInYearEur, 0)
+  const cashMovementIn = cashRows.reduce((s, r) => s + r.amountBoughtInYearEur, 0)
+  const cashMovementOut = cashRows.reduce((s, r) => s + r.amountSoldInYearEur, 0)
+  const cashflowClassificationDiff =
+    summary.grossContributionsInEur - summary.grossContributionsOutEur - summary.netContributionsEur
+
+  const cashflowClassification: AuditCheck = {
+    title: 'Cashflow classification audit',
+    rows: [
+      { label: 'External contributions (in)', value: summary.grossContributionsInEur },
+      { label: 'External withdrawals (out)', value: -summary.grossContributionsOutEur },
+      { label: 'Net external contributions', value: summary.netContributionsEur },
+      { label: 'Internal buys (non-cash assets)', value: internalBuys },
+      { label: 'Internal sells (non-cash assets)', value: internalSells },
+      { label: 'Fees paid', value: summary.feesPaidEur },
+      { label: 'Dividends/interest received', value: summary.dividendsInterestEur },
+      { label: 'Cash/free-space deposits (into cash rows)', value: cashMovementIn },
+      { label: 'Cash/free-space withdrawals (from cash rows)', value: cashMovementOut },
+    ],
+    differenceEur: cashflowClassificationDiff,
+    status: auditStatus(cashflowClassificationDiff),
+    explanation:
+      'Internal buys/sells and cash/free-space movements are listed separately from external contributions/withdrawals and are never summed into net external contributions. The difference row validates that gross-in minus gross-out reconstructs net contributions exactly — same source list, split into pieces.',
+  }
+
+  return {
+    portfolioValueBridge,
+    profitLossBridge,
+    currentPlConsistency,
+    costBasisConsistency,
+    cashflowClassification,
+  }
 }

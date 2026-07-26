@@ -172,6 +172,9 @@ export default async function DashboardPage() {
               tone={hasHistory ? profitTone : 'neutral'}
             />
           </div>
+          <p className="text-xs text-slate-400 px-1">
+            Cash balances are included in portfolio value but excluded from investment P/L.
+          </p>
 
           <PortfolioBreakdownCharts
             byCategory={byCategory}

@@ -368,6 +368,13 @@ export default async function HistoryPage() {
             />
           </div>
         )}
+        {hasInvestments && (
+          <p className="text-xs text-slate-400 px-1">
+            Cash balances are included in portfolio value but excluded from investment P/L. The chart&apos;s
+            &quot;Profit / loss&quot; line reflects this for today; dates before this change may still include cash
+            in past snapshots.
+          </p>
+        )}
       </div>
 
       {/* Section 2: By asset */}

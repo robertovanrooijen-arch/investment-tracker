@@ -26,10 +26,42 @@ import type {
 // ── Shared style helpers ────────────────────────────────────────────────────
 
 const TONE_COLOR = {
-  positive: '#10b981', // emerald-500
-  negative: '#ef4444', // rose-500
+  positive: '#059669', // emerald-600 — slightly more saturated than emerald-500 for easier scanning
+  negative: '#dc2626', // rose-600 — slightly more saturated than rose-500 for easier scanning
   neutral: '#0f172a',  // slate-900
 } as const
+
+// Shared axis styling — bumped up from the original 11-12px for readability.
+const AXIS_TICK_STYLE = { fontSize: 13, fill: '#475569' } // slate-600
+const CATEGORY_TICK_FILL = '#1e293b' // slate-800 — darker than the numeric axis for stronger contrast
+const AXIS_STROKE = '#cbd5e1'
+const ZERO_LINE_STYLE = { stroke: '#94a3b8', strokeWidth: 1.5 } // slate-400, thicker than gridlines
+
+function truncateLabel(text: string, maxChars: number): string {
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text
+}
+
+// Custom category-axis tick: visually truncates long labels (full text is
+// always still available in the tooltip) and renders a bit larger/darker
+// than recharts' default for readability.
+function CategoryTick({
+  x,
+  y,
+  payload,
+  maxChars,
+}: {
+  x?: number
+  y?: number
+  payload?: { value: string }
+  maxChars: number
+}) {
+  if (x === undefined || y === undefined || !payload) return null
+  return (
+    <text x={x} y={y} dy={4} textAnchor="end" fontSize={13} fill={CATEGORY_TICK_FILL}>
+      {truncateLabel(String(payload.value), maxChars)}
+    </text>
+  )
+}
 
 const TYPE_COLORS: Record<string, string> = {
   stock: '#3b82f6',
@@ -57,7 +89,7 @@ function fmtSigned(n: number): string {
 
 function TooltipBox({ children }: { children: ReactNode }) {
   return (
-    <div className="min-w-[160px] rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-lg text-xs">
+    <div className="min-w-[170px] rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 shadow-lg text-sm">
       {children}
     </div>
   )
@@ -94,16 +126,16 @@ export function PortfolioBridgeChart({ steps }: { steps: BridgeStep[] | null }) 
   }
 
   return (
-    <div className="h-64 w-full md:h-80">
+    <div className="h-72 w-full md:h-96">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={steps} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <BarChart data={steps} margin={{ top: 12, right: 12, bottom: 4, left: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-          <XAxis dataKey="label" tick={{ fontSize: 12, fill: '#64748b' }} stroke="#cbd5e1" />
+          <XAxis dataKey="label" tick={AXIS_TICK_STYLE} stroke={AXIS_STROKE} />
           <YAxis
             tickFormatter={(v) => money(typeof v === 'number' ? v : Number(v), 'EUR')}
-            tick={{ fontSize: 12, fill: '#64748b' }}
-            stroke="#cbd5e1"
-            width={90}
+            tick={AXIS_TICK_STYLE}
+            stroke={AXIS_STROKE}
+            width={96}
           />
           <Tooltip content={<BridgeTooltip />} cursor={{ fill: '#f1f5f9' }} />
           <Bar dataKey="base" stackId="bridge" fill="transparent" isAnimationActive={false} />
@@ -162,15 +194,15 @@ export function AssetClassAllocationChart({ classSummaries }: { classSummaries: 
 
   return (
     <div>
-      <div className="h-52">
+      <div className="h-60">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
               data={classSummaries.map((c) => ({ ...c, name: TYPE_LABELS[c.type] ?? c.type }))}
               cx="50%"
               cy="50%"
-              innerRadius={52}
-              outerRadius={84}
+              innerRadius={56}
+              outerRadius={92}
               paddingAngle={2}
               dataKey="currentValueEur"
             >
@@ -182,22 +214,22 @@ export function AssetClassAllocationChart({ classSummaries }: { classSummaries: 
           </PieChart>
         </ResponsiveContainer>
       </div>
-      <ul className="mt-3 space-y-2">
+      <ul className="mt-3 space-y-2.5">
         {classSummaries.map((c) => (
           <li key={c.type} className="flex items-center justify-between text-sm">
             <div className="flex items-center gap-2 min-w-0">
               <span
-                className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                className="inline-block h-3 w-3 shrink-0 rounded-full"
                 style={{ backgroundColor: TYPE_COLORS[c.type] ?? '#9ca3af' }}
               />
-              <span className="truncate text-slate-700">
+              <span className="truncate text-slate-700 font-medium">
                 {TYPE_LABELS[c.type] ?? c.type}
-                {c.isCashClass && <span className="ml-1.5 text-xs font-medium text-sky-600">Cash</span>}
+                {c.isCashClass && <span className="ml-1.5 text-xs font-semibold text-sky-600">Cash</span>}
               </span>
             </div>
             <div className="flex items-center gap-3 shrink-0">
               <span className="text-slate-500 tabular-nums">{c.pctOfPortfolio.toFixed(1)}%</span>
-              <span className="font-medium text-slate-900 tabular-nums">{money(c.currentValueEur, 'EUR')}</span>
+              <span className="font-semibold text-slate-900 tabular-nums">{money(c.currentValueEur, 'EUR')}</span>
             </div>
           </li>
         ))}
@@ -236,24 +268,24 @@ export function AssetClassPnlChart({ classSummaries }: { classSummaries: AssetCl
 
   return (
     <div>
-      <div style={{ height: Math.max(rows.length * 44, 140) }}>
+      <div style={{ height: Math.max(rows.length * 52, 170) }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 8 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
             <XAxis
               type="number"
               tickFormatter={(v) => money(typeof v === 'number' ? v : Number(v), 'EUR')}
-              tick={{ fontSize: 12, fill: '#64748b' }}
-              stroke="#cbd5e1"
+              tick={AXIS_TICK_STYLE}
+              stroke={AXIS_STROKE}
             />
             <YAxis
               type="category"
               dataKey="label"
-              width={100}
-              tick={{ fontSize: 12, fill: '#334155' }}
-              stroke="#cbd5e1"
+              width={116}
+              tick={(props: object) => <CategoryTick {...(props as { x?: number; y?: number; payload?: { value: string } })} maxChars={16} />}
+              stroke={AXIS_STROKE}
             />
-            <ReferenceLine x={0} stroke="#cbd5e1" />
+            <ReferenceLine x={0} {...ZERO_LINE_STYLE} />
             <Tooltip content={<ClassPnlTooltip />} cursor={{ fill: '#f1f5f9' }} />
             <Bar dataKey="totalPLEur" radius={4} isAnimationActive={false}>
               {rows.map((r) => (
@@ -295,26 +327,26 @@ export function AssetPnlRankingChart({ rows }: { rows: AssetPnlRankingRow[] }) {
   const data: RankingRow[] = rows.map((r) => ({ ...r, label: `${r.name} · ${r.platform}` }))
 
   return (
-    <div style={{ height: Math.max(data.length * 40, 160) }}>
+    <div style={{ height: Math.max(data.length * 52, 200) }}>
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 8 }}>
+        <BarChart data={data} layout="vertical" margin={{ top: 4, right: 28, bottom: 4, left: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
           <XAxis
             type="number"
             tickFormatter={(v) => money(typeof v === 'number' ? v : Number(v), 'EUR')}
-            tick={{ fontSize: 12, fill: '#64748b' }}
-            stroke="#cbd5e1"
+            tick={AXIS_TICK_STYLE}
+            stroke={AXIS_STROKE}
           />
           <YAxis
             type="category"
             dataKey="label"
-            width={170}
-            tick={{ fontSize: 11, fill: '#334155' }}
-            stroke="#cbd5e1"
+            width={188}
+            tick={(props: object) => <CategoryTick {...(props as { x?: number; y?: number; payload?: { value: string } })} maxChars={24} />}
+            stroke={AXIS_STROKE}
           />
-          <ReferenceLine x={0} stroke="#cbd5e1" />
+          <ReferenceLine x={0} {...ZERO_LINE_STYLE} />
           <Tooltip content={<RankingTooltip />} cursor={{ fill: '#f1f5f9' }} />
-          <Bar dataKey="totalPLEur" radius={4} isAnimationActive={false}>
+          <Bar dataKey="totalPLEur" radius={4} isAnimationActive={false} barSize={26}>
             {data.map((r) => (
               <Cell key={r.investmentId} fill={r.totalPLEur >= 0 ? TONE_COLOR.positive : TONE_COLOR.negative} />
             ))}
@@ -357,18 +389,18 @@ export function MonthlyCashflowChart({ rows }: { rows: MonthlyCashflowRow[] }) {
   const data = rows.map((r) => ({ ...r, negOutflowEur: -r.outflowEur }))
 
   return (
-    <div className="h-64 w-full md:h-72">
+    <div className="h-72 w-full md:h-80">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <BarChart data={data} margin={{ top: 12, right: 12, bottom: 4, left: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-          <XAxis dataKey="label" tick={{ fontSize: 12, fill: '#64748b' }} stroke="#cbd5e1" />
+          <XAxis dataKey="label" tick={AXIS_TICK_STYLE} stroke={AXIS_STROKE} />
           <YAxis
             tickFormatter={(v) => money(typeof v === 'number' ? v : Number(v), 'EUR')}
-            tick={{ fontSize: 12, fill: '#64748b' }}
-            stroke="#cbd5e1"
-            width={90}
+            tick={AXIS_TICK_STYLE}
+            stroke={AXIS_STROKE}
+            width={96}
           />
-          <ReferenceLine y={0} stroke="#cbd5e1" />
+          <ReferenceLine y={0} {...ZERO_LINE_STYLE} />
           <Tooltip content={<CashflowTooltip />} cursor={{ fill: '#f1f5f9' }} />
           <Bar dataKey="inflowEur" fill="#0ea5e9" radius={[3, 3, 0, 0]} isAnimationActive={false} name="In" />
           <Bar dataKey="negOutflowEur" fill="#f59e0b" radius={[0, 0, 3, 3]} isAnimationActive={false} name="Out" />
