@@ -19,7 +19,7 @@ type Props = {
 }
 
 export function YtdCell({ ytd }: { ytd: InvestmentYtdRow | null }) {
-  if (!ytd || ytd.ytdReturnPercent === null) {
+  if (!ytd || ytd.unavailableReason !== null) {
     return (
       <span
         className="text-slate-400"
@@ -29,17 +29,25 @@ export function YtdCell({ ytd }: { ytd: InvestmentYtdRow | null }) {
       </span>
     )
   }
-  const tone =
-    ytd.ytdReturnPercent > 0
+
+  const percentUnavailable = ytd.ytdReturnPercent === null
+  const tone = percentUnavailable
+    ? 'text-slate-400'
+    : ytd.ytdReturnPercent! > 0
       ? 'text-emerald-600'
-      : ytd.ytdReturnPercent < 0
+      : ytd.ytdReturnPercent! < 0
         ? 'text-rose-600'
         : 'text-slate-900'
+  const title = percentUnavailable
+    ? (ytd.percentUnavailableReason ?? undefined)
+    : ytd.isApproximate
+      ? 'Approximate — uses today’s price for the year-start valuation.'
+      : undefined
+
   return (
-    <div title={ytd.isApproximate ? 'Approximate — uses today’s price for the year-start valuation.' : undefined}>
+    <div title={title}>
       <div className={tone}>
-        {ytd.ytdReturnPercent >= 0 ? '+' : ''}
-        {ytd.ytdReturnPercent.toFixed(1)}%
+        {percentUnavailable ? '—' : `${ytd.ytdReturnPercent! >= 0 ? '+' : ''}${ytd.ytdReturnPercent!.toFixed(1)}%`}
       </div>
       {ytd.ytdGrowthEur !== null && (
         <div className="text-xs text-slate-400">

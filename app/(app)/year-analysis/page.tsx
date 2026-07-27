@@ -9,6 +9,7 @@ import {
   getAvailableYears,
   computeAssetYearRows,
   computeAssetClassSummaries,
+  computeAssetClassYtd,
   computeYearPortfolioSummary,
   computePortfolioBridgeData,
   computeAssetPnlRanking,
@@ -24,6 +25,7 @@ import {
   PortfolioBridgeChart,
   AssetClassAllocationChart,
   AssetClassPnlChart,
+  AssetClassYtdChart,
   AssetPnlRankingChart,
   MonthlyCashflowChart,
 } from '@/components/year-analysis/charts'
@@ -172,6 +174,7 @@ export default async function YearAnalysisPage({
 
   const assetRows = computeAssetYearRows(investments, transactions, year, fxRates)
   const classSummaries = computeAssetClassSummaries(assetRows)
+  const classYtd = computeAssetClassYtd(investments, transactions, year, fxRates)
   const summary = computeYearPortfolioSummary(
     year,
     assetRows,
@@ -367,6 +370,15 @@ export default async function YearAnalysisPage({
           <h2 className="text-base font-semibold text-slate-900 mb-3">P/L by asset class — {year}</h2>
           <AssetClassPnlChart classSummaries={classSummaries} />
         </div>
+      </div>
+
+      {/* YTD performance by asset class */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
+        <h2 className="text-base font-semibold text-slate-900 mb-1">YTD performance by asset class — {year}</h2>
+        <p className="text-sm text-slate-500 mb-3">
+          Selected-year growth after external cashflows, with Modified Dietz return by asset class.
+        </p>
+        <AssetClassYtdChart classYtd={classYtd} />
       </div>
 
       {/* Top winners / losers */}

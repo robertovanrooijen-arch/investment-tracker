@@ -243,6 +243,7 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
       dailyPct: hasDailyData ? dailyPct : null,
       ytdGrowthEur: ytd.growthEur,
       ytdReturnPercent: ytd.returnPercent,
+      ytdPercentUnavailableReason: ytd.percentUnavailableReason,
       latestUpdated,
     }
   }, [filtered, ytdYear])
@@ -520,28 +521,32 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
                 </td>
                 <td
                   className="px-6 py-3.5 text-right tabular-nums"
-                  title="Weighted YTD for visible rows with reliable start valuation. Excludes rows shown as unavailable."
+                  title={
+                    totals.ytdPercentUnavailableReason ??
+                    'Weighted YTD for visible rows with reliable start valuation. Excludes rows shown as unavailable.'
+                  }
                 >
-                  {totals.ytdReturnPercent !== null ? (
+                  {totals.ytdGrowthEur !== null ? (
                     <>
                       <div
                         className={
-                          totals.ytdReturnPercent > 0
-                            ? 'text-emerald-600'
-                            : totals.ytdReturnPercent < 0
-                              ? 'text-rose-600'
-                              : ''
+                          totals.ytdReturnPercent === null
+                            ? 'text-slate-400'
+                            : totals.ytdReturnPercent > 0
+                              ? 'text-emerald-600'
+                              : totals.ytdReturnPercent < 0
+                                ? 'text-rose-600'
+                                : ''
                         }
                       >
-                        {totals.ytdReturnPercent >= 0 ? '+' : ''}
-                        {totals.ytdReturnPercent.toFixed(1)}%
+                        {totals.ytdReturnPercent !== null
+                          ? `${totals.ytdReturnPercent >= 0 ? '+' : ''}${totals.ytdReturnPercent.toFixed(1)}%`
+                          : '—'}
                       </div>
-                      {totals.ytdGrowthEur !== null && (
-                        <div className="text-xs font-normal text-slate-400">
-                          {totals.ytdGrowthEur >= 0 ? '+' : ''}
-                          {money(totals.ytdGrowthEur, 'EUR')}
-                        </div>
-                      )}
+                      <div className="text-xs font-normal text-slate-400">
+                        {totals.ytdGrowthEur >= 0 ? '+' : ''}
+                        {money(totals.ytdGrowthEur, 'EUR')}
+                      </div>
                     </>
                   ) : (
                     <span className="text-slate-400">—</span>
@@ -580,12 +585,19 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
               <div className="font-semibold text-slate-900 tabular-nums">{money(totals.value, 'EUR')}</div>
               <div
                 className="text-xs text-slate-500 tabular-nums"
-                title="Weighted YTD for visible rows with reliable start valuation. Excludes rows shown as unavailable."
+                title={
+                  totals.ytdPercentUnavailableReason ??
+                  'Weighted YTD for visible rows with reliable start valuation. Excludes rows shown as unavailable.'
+                }
               >
                 P/L {money(totals.pl, 'EUR')}
                 {' · '}
                 Computable Position YTD{' '}
-                {totals.ytdReturnPercent !== null ? `${totals.ytdReturnPercent >= 0 ? '+' : ''}${totals.ytdReturnPercent.toFixed(1)}%` : '—'}
+                {totals.ytdReturnPercent !== null
+                  ? `${totals.ytdReturnPercent >= 0 ? '+' : ''}${totals.ytdReturnPercent.toFixed(1)}%`
+                  : totals.ytdGrowthEur !== null
+                    ? `— (${totals.ytdGrowthEur >= 0 ? '+' : ''}${money(totals.ytdGrowthEur, 'EUR')})`
+                    : '—'}
               </div>
             </span>
           </div>
@@ -646,18 +658,23 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
                               : '—'
                             : '—'}
                       </div>
-                      {ytd?.ytdReturnPercent !== null && ytd?.ytdReturnPercent !== undefined && (
+                      {ytd && ytd.ytdGrowthEur !== null && (
                         <div
                           className={`text-xs tabular-nums ${
-                            ytd.ytdReturnPercent > 0
-                              ? 'text-emerald-600'
-                              : ytd.ytdReturnPercent < 0
-                                ? 'text-rose-600'
-                                : 'text-slate-500'
+                            ytd.ytdReturnPercent === null
+                              ? 'text-slate-400'
+                              : ytd.ytdReturnPercent > 0
+                                ? 'text-emerald-600'
+                                : ytd.ytdReturnPercent < 0
+                                  ? 'text-rose-600'
+                                  : 'text-slate-500'
                           }`}
+                          title={ytd.ytdReturnPercent === null ? (ytd.percentUnavailableReason ?? undefined) : undefined}
                         >
-                          YTD {ytd.ytdReturnPercent >= 0 ? '+' : ''}
-                          {ytd.ytdReturnPercent.toFixed(1)}%
+                          YTD{' '}
+                          {ytd.ytdReturnPercent !== null
+                            ? `${ytd.ytdReturnPercent >= 0 ? '+' : ''}${ytd.ytdReturnPercent.toFixed(1)}%`
+                            : `— (${ytd.ytdGrowthEur >= 0 ? '+' : ''}${money(ytd.ytdGrowthEur, 'EUR')})`}
                         </div>
                       )}
                       {dailyChangeEur !== null && (

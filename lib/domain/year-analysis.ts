@@ -431,10 +431,77 @@ export type InvestmentYtdRow = {
   ytdReturnPercent: number | null
   isApproximate: boolean
   unavailableReason: string | null
+  // Set only when ytdGrowthEur IS computable but ytdReturnPercent was
+  // deliberately withheld — see ytdPercentIsMeaningful below. Distinct from
+  // unavailableReason, which means the whole row (EUR included) has nothing.
+  percentUnavailableReason: string | null
 }
 
 function ytdPeriodEndIso(year: number): string {
   return year >= new Date().getFullYear() ? todayIso() : `${year}-12-31`
+}
+
+// A Modified Dietz percentage needs a real capital base to divide by. For a
+// position opened and fully closed within the period (start value 0, end
+// value 0 — a round trip), or one whose weighted denominator happens to land
+// at zero, negative, or tiny relative to the money that actually moved, the
+// resulting percentage is numerically unstable even though the EUR result
+// (end - start - flows) stays perfectly valid. The shared safePercent() 0.01
+// EUR floor (used by computeModifiedDietzReturnPercent, and by the main
+// platform-cashflow-based Year Analysis Growth after contributions /
+// Modified Dietz) doesn't catch this — a denominator of, say, -€0.37 clears
+// it easily while still producing a four-digit percentage.
+//
+// This guard is intentionally scoped to the bottom-up per-investment /
+// per-asset-class YTD views (Investments page Position YTD, Year Analysis
+// "YTD by asset class" chart) and does NOT touch computeModifiedDietzReturnPercent
+// or safePercent themselves, so the main Year Analysis / Dashboard figures
+// are unaffected.
+export const YTD_PERCENT_UNAVAILABLE_REASON =
+  'YTD % unavailable: no meaningful capital base for a percentage return. EUR result is still shown.'
+
+const MIN_YTD_CAPITAL_BASE_FRACTION = 0.05
+
+function ytdPercentIsMeaningful(
+  startValueEur: number,
+  endValueEur: number,
+  cashFlows: DatedCashFlow[],
+  periodStartIso: string,
+  periodEndIso: string
+): boolean {
+  // Start value 0 alone is normal and fine — Modified Dietz is specifically
+  // built to weight a position that only started receiving contributions
+  // partway through the period (e.g. any holding bought for the first time
+  // this year and still held). It only becomes degenerate when the position
+  // ALSO ends the period at 0 — bought and fully sold within the same year,
+  // so there is no capital base left to express a return against at either
+  // end.
+  const startIsZero = Math.abs(startValueEur) < 1e-9
+  const endIsZero = Math.abs(endValueEur) < 1e-9
+  if (startIsZero && endIsZero) return false
+
+  const periodStart = new Date(periodStartIso).getTime()
+  const periodEnd = new Date(periodEndIso).getTime()
+  const totalDays = (periodEnd - periodStart) / MS_PER_DAY
+  if (!Number.isFinite(totalDays) || totalDays <= 0) return false
+
+  let weightedCashFlow = 0
+  let grossFlowMagnitude = 0
+  for (const flow of cashFlows) {
+    const flowTime = new Date(flow.date).getTime()
+    if (!Number.isFinite(flowTime)) continue
+    const daysSinceStart = Math.min(Math.max((flowTime - periodStart) / MS_PER_DAY, 0), totalDays)
+    const weight = (totalDays - daysSinceStart) / totalDays
+    weightedCashFlow += flow.amountEur * weight
+    grossFlowMagnitude += Math.abs(flow.amountEur)
+  }
+
+  const denominator = startValueEur + weightedCashFlow
+  if (denominator <= 0) return false
+
+  const capitalBase = Math.max(Math.abs(startValueEur), grossFlowMagnitude)
+  if (capitalBase < 1e-9) return false
+  return denominator >= MIN_YTD_CAPITAL_BASE_FRACTION * capitalBase
 }
 
 export function computeInvestmentYtdRows(
@@ -461,6 +528,7 @@ export function computeInvestmentYtdRows(
     ytdReturnPercent: null,
     isApproximate: false,
     unavailableReason: reason,
+    percentUnavailableReason: null,
   })
 
   return investments.map((inv) => {
@@ -534,13 +602,16 @@ export function computeInvestmentYtdRows(
 
     const netFlow = datedFlows.reduce((s, f) => s + f.amountEur, 0)
     const ytdGrowthEur = row.currentValueEur - startValueEur - netFlow
-    const ytdReturnPercent = computeModifiedDietzReturnPercent(
+    const percentMeaningful = ytdPercentIsMeaningful(
       startValueEur,
       row.currentValueEur,
       datedFlows,
       periodStart,
       periodEnd
     )
+    const ytdReturnPercent = percentMeaningful
+      ? computeModifiedDietzReturnPercent(startValueEur, row.currentValueEur, datedFlows, periodStart, periodEnd)
+      : null
 
     return {
       investmentId: inv.id,
@@ -551,6 +622,7 @@ export function computeInvestmentYtdRows(
       ytdReturnPercent,
       isApproximate,
       unavailableReason: null,
+      percentUnavailableReason: percentMeaningful ? null : YTD_PERCENT_UNAVAILABLE_REASON,
     }
   })
 }
@@ -563,24 +635,83 @@ export function computeInvestmentYtdRows(
 export function combineInvestmentYtd(
   rows: InvestmentYtdRow[],
   year: number
-): { growthEur: number | null; returnPercent: number | null } {
+): { growthEur: number | null; returnPercent: number | null; percentUnavailableReason: string | null } {
   const usable = rows.filter((r) => r.startValueEur !== null && r.currentValueEur !== null)
-  if (usable.length === 0) return { growthEur: null, returnPercent: null }
+  if (usable.length === 0) return { growthEur: null, returnPercent: null, percentUnavailableReason: null }
 
   const startValueEur = usable.reduce((s, r) => s + (r.startValueEur ?? 0), 0)
   const currentValueEur = usable.reduce((s, r) => s + (r.currentValueEur ?? 0), 0)
   const datedFlows = usable.flatMap((r) => r.datedFlows)
   const growthEur = usable.reduce((s, r) => s + (r.ytdGrowthEur ?? 0), 0)
 
-  const returnPercent = computeModifiedDietzReturnPercent(
-    startValueEur,
-    currentValueEur,
-    datedFlows,
-    `${year}-01-01`,
-    ytdPeriodEndIso(year)
-  )
+  const periodStart = `${year}-01-01`
+  const periodEnd = ytdPeriodEndIso(year)
+  const percentMeaningful = ytdPercentIsMeaningful(startValueEur, currentValueEur, datedFlows, periodStart, periodEnd)
+  const returnPercent = percentMeaningful
+    ? computeModifiedDietzReturnPercent(startValueEur, currentValueEur, datedFlows, periodStart, periodEnd)
+    : null
 
-  return { growthEur, returnPercent }
+  return {
+    growthEur,
+    returnPercent,
+    percentUnavailableReason: percentMeaningful ? null : YTD_PERCENT_UNAVAILABLE_REASON,
+  }
+}
+
+// Groups computeInvestmentYtdRows by asset class (same InvestmentType key
+// computeAssetClassSummaries uses) and combines each group with
+// combineInvestmentYtd — no new formula, just grouping + reuse. Cash-like
+// investments are excluded entirely (not just zeroed) since YTD isn't a
+// meaningful concept for a cash balance.
+export type AssetClassYtd = {
+  type: InvestmentType
+  growthEur: number | null
+  returnPercent: number | null
+  // Set only when growthEur IS computable but returnPercent was withheld —
+  // see ytdPercentIsMeaningful. Null whenever returnPercent is present, or
+  // when there was nothing to combine at all.
+  percentUnavailableReason: string | null
+  // Count of holdings in this class actually folded into growthEur/returnPercent
+  // vs. left out because they had no computable YTD (see InvestmentYtdRow.unavailableReason).
+  includedCount: number
+  excludedCount: number
+}
+
+export function computeAssetClassYtd(
+  investments: Investment[],
+  transactions: Transaction[],
+  year: number,
+  fxRates?: FxRates
+): AssetClassYtd[] {
+  const ytdRows = computeInvestmentYtdRows(investments, transactions, year, fxRates)
+  const ytdByInvestmentId = new Map(ytdRows.map((r) => [r.investmentId, r]))
+
+  const byType = new Map<InvestmentType, InvestmentYtdRow[]>()
+  for (const inv of investments) {
+    if (isCashLikeInvestment(inv)) continue
+    const ytd = ytdByInvestmentId.get(inv.id)
+    if (!ytd) continue
+    const list = byType.get(inv.type) ?? []
+    list.push(ytd)
+    byType.set(inv.type, list)
+  }
+
+  const results: AssetClassYtd[] = []
+  for (const [type, rows] of byType) {
+    const includedCount = rows.filter((r) => r.startValueEur !== null && r.currentValueEur !== null).length
+    const combined = combineInvestmentYtd(rows, year)
+    results.push({
+      type,
+      growthEur: combined.growthEur,
+      returnPercent: combined.returnPercent,
+      percentUnavailableReason: combined.percentUnavailableReason,
+      includedCount,
+      excludedCount: rows.length - includedCount,
+    })
+  }
+
+  results.sort((a, b) => (b.growthEur ?? -Infinity) - (a.growthEur ?? -Infinity))
+  return results
 }
 
 // ---------- Asset-class summary ----------

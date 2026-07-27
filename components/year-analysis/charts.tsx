@@ -14,11 +14,13 @@ import {
   PieChart,
   Pie,
   ReferenceLine,
+  LabelList,
 } from 'recharts'
 import { money } from '@/lib/format'
 import type {
   BridgeStep,
   AssetClassSummary,
+  AssetClassYtd,
   AssetPnlRankingRow,
   MonthlyCashflowRow,
 } from '@/lib/domain/year-analysis'
@@ -296,6 +298,106 @@ export function AssetClassPnlChart({ classSummaries }: { classSummaries: AssetCl
         </ResponsiveContainer>
       </div>
       <p className="mt-2 text-xs text-slate-400">Cash excluded from investment P/L.</p>
+    </div>
+  )
+}
+
+// ── 3b. YTD performance by asset class ───────────────────────────────────────
+// Deliberately a different metric from the P/L-by-class chart above: growth
+// after contributions + Modified Dietz (selected-year, cashflow-adjusted),
+// never all-time cost-basis P/L. See computeAssetClassYtd.
+
+type ClassYtdRow = AssetClassYtd & { label: string; pctLabel: string }
+
+function ClassYtdTooltip({ active, payload }: { active?: boolean; payload?: { payload: ClassYtdRow }[] }) {
+  if (!active || !payload?.length) return null
+  const row = payload[0].payload
+  return (
+    <TooltipBox>
+      <p className="font-medium text-slate-700">{row.label}</p>
+      <p className="tabular-nums text-slate-900 font-semibold">
+        {row.growthEur !== null ? fmtSigned(row.growthEur) : 'Not applicable'}
+      </p>
+      {row.returnPercent !== null ? (
+        <p className="text-slate-500">{fmtSigned(row.returnPercent)}% · Modified Dietz</p>
+      ) : (
+        row.growthEur !== null &&
+        row.percentUnavailableReason && (
+          <p className="text-slate-500 text-xs">{row.percentUnavailableReason}</p>
+        )
+      )}
+      <p className="mt-1 text-xs text-slate-400">Not all-time P/L. Selected-year performance after cashflows.</p>
+      {row.excludedCount > 0 && (
+        <p className="mt-1 text-xs text-amber-600">
+          {row.excludedCount} holding{row.excludedCount === 1 ? '' : 's'} excluded — no reliable year-start
+          valuation.
+        </p>
+      )}
+    </TooltipBox>
+  )
+}
+
+export function AssetClassYtdChart({ classYtd }: { classYtd: AssetClassYtd[] }) {
+  const rows: ClassYtdRow[] = classYtd
+    .filter((c) => c.growthEur !== null)
+    .map((c) => ({
+      ...c,
+      label: TYPE_LABELS[c.type] ?? c.type,
+      pctLabel: c.returnPercent !== null ? `${c.returnPercent >= 0 ? '+' : ''}${c.returnPercent.toFixed(1)}%` : '',
+    }))
+
+  if (rows.length === 0) {
+    return <EmptyChartCard message="No selected-year performance available yet — see caveat above." />
+  }
+
+  return (
+    <div>
+      <div style={{ height: Math.max(rows.length * 52, 170) }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 56, bottom: 4, left: 8 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
+            <XAxis
+              type="number"
+              tickFormatter={(v) => money(typeof v === 'number' ? v : Number(v), 'EUR')}
+              tick={AXIS_TICK_STYLE}
+              stroke={AXIS_STROKE}
+            />
+            <YAxis
+              type="category"
+              dataKey="label"
+              width={116}
+              tick={(props: object) => <CategoryTick {...(props as { x?: number; y?: number; payload?: { value: string } })} maxChars={16} />}
+              stroke={AXIS_STROKE}
+            />
+            <ReferenceLine x={0} {...ZERO_LINE_STYLE} />
+            <Tooltip content={<ClassYtdTooltip />} cursor={{ fill: '#f1f5f9' }} />
+            <Bar dataKey="growthEur" radius={4} isAnimationActive={false}>
+              {rows.map((r) => (
+                <Cell
+                  key={r.type}
+                  fill={
+                    (r.growthEur ?? 0) > 0
+                      ? TONE_COLOR.positive
+                      : (r.growthEur ?? 0) < 0
+                        ? TONE_COLOR.negative
+                        : TONE_COLOR.neutral
+                  }
+                />
+              ))}
+              <LabelList dataKey="pctLabel" position="right" style={{ fill: '#64748b', fontSize: 12 }} />
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="mt-2 text-xs text-slate-400">
+        Selected-year growth after external cashflows, with Modified Dietz return by asset class. Not all-time P/L.
+      </p>
+      {rows.some((r) => r.excludedCount > 0) && (
+        <p className="mt-1 text-xs text-amber-600">
+          Some holdings are excluded from one or more classes — no reliable year-start valuation. See tooltip per
+          bar.
+        </p>
+      )}
     </div>
   )
 }
