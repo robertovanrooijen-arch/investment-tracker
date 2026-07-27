@@ -1025,6 +1025,12 @@ export type SnapshotForAudit = {
   // predate the cash-exclusion fix below — not used for any date-range
   // filtering.
   updated_at: string | null
+  // Used only to detect snapshots that were partially, manually corrected
+  // (e.g. total_value_eur fixed from a source document) without their
+  // total_realized_eur / total_unrealized_eur being reconstructed. A recent
+  // updated_at alone doesn't prove those fields were verified — see
+  // VALUE_ONLY_CORRECTION_MARKER below.
+  snapshot_source: string | null
 }
 
 function auditStatus(diff: number | null, tolerance = 1): AuditStatus {
@@ -1042,6 +1048,14 @@ function auditStatus(diff: number | null, tolerance = 1): AuditStatus {
 // isPreCashFix logic below) once historical snapshots are backfilled under
 // the new definition.
 const CASH_EXCLUSION_FIX_ROLLOUT_ISO = '2026-07-22'
+
+// Marker appended to snapshot_source when a snapshot's total_value_eur was
+// corrected from an official source document (e.g. removing cash that had
+// already been withdrawn) without also reconstructing total_realized_eur /
+// total_unrealized_eur under the cash-exclusion methodology. updated_at gets
+// bumped by that kind of edit too, so it alone can't be trusted to mean
+// "P/L fields verified" — this marker is checked explicitly instead.
+const VALUE_ONLY_CORRECTION_MARKER = 'corrected_removed_gold_republic_withdrawn_cash_753_46'
 
 export function computeReconciliationAudit(
   investments: Investment[],
@@ -1113,6 +1127,14 @@ export function computeReconciliationAudit(
   const startSnapPreDatesCashFix =
     startSnap !== null && (startSnap.updated_at ?? startSnap.date) < CASH_EXCLUSION_FIX_ROLLOUT_ISO
 
+  // A snapshot can also be *partially* corrected (e.g. total_value_eur fixed
+  // from an official statement) without total_realized_eur/total_unrealized_eur
+  // being reconstructed. That edit bumps updated_at too, so updated_at alone
+  // would wrongly clear startSnapPreDatesCashFix above. Check the explicit
+  // marker instead — see VALUE_ONLY_CORRECTION_MARKER.
+  const startSnapValueOnlyCorrected =
+    startSnap !== null && (startSnap.snapshot_source ?? '').includes(VALUE_ONLY_CORRECTION_MARKER)
+
   const profitLossBridge: AuditCheck = {
     title: 'Profit/Loss bridge — start snapshot vs live Dashboard/History P/L',
     rows: [
@@ -1120,7 +1142,13 @@ export function computeReconciliationAudit(
         label: 'Start total P/L (snapshot)',
         value: startTotalProfitLoss,
         note: startSnap
-          ? `as of ${startSnap.date}${startSnapPreDatesCashFix ? ' — written before the cash-exclusion fix' : ''}`
+          ? `as of ${startSnap.date}${
+              startSnapValueOnlyCorrected
+                ? ' — value corrected from official statements; P/L fields not reconstructed'
+                : startSnapPreDatesCashFix
+                  ? ' — written before the cash-exclusion fix'
+                  : ''
+            }`
           : 'no snapshot with a realized/unrealized breakdown found',
       },
       {
@@ -1136,15 +1164,17 @@ export function computeReconciliationAudit(
     status:
       startTotalProfitLoss === null
         ? 'unavailable'
-        : startSnapPreDatesCashFix
+        : startSnapValueOnlyCorrected || startSnapPreDatesCashFix
           ? 'approximate'
           : auditStatus(plBridgeDiff),
     explanation:
       startTotalProfitLoss === null
         ? 'No start-of-year snapshot with a realized/unrealized breakdown — cannot bridge P/L.'
-        : startSnapPreDatesCashFix
-          ? 'Start snapshot uses the old P/L definition; backfill needed for a reliable P/L change. It was written before the cash-exclusion fix, so it may still count a cash balance as profit while the live total (right) now correctly excludes it — "P/L change this year" is not reliable until historical snapshots are backfilled under the new definition.'
-          : 'Validates that Dashboard/History\'s own snapshot-vs-live bookkeeping is internally consistent — both sides now use the same cash-excluded P/L definition.',
+        : startSnapValueOnlyCorrected
+          ? 'Start value corrected from official platform statements. Historical snapshot P/L fields for 2025-12-31 are not fully reconstructed.'
+          : startSnapPreDatesCashFix
+            ? 'Start snapshot uses the old P/L definition; backfill needed for a reliable P/L change. It was written before the cash-exclusion fix, so it may still count a cash balance as profit while the live total (right) now correctly excludes it — "P/L change this year" is not reliable until historical snapshots are backfilled under the new definition.'
+            : 'Validates that Dashboard/History\'s own snapshot-vs-live bookkeeping is internally consistent — both sides now use the same cash-excluded P/L definition.',
   }
 
   // ---------- 3. Current P/L consistency: Dashboard/History vs Year Analysis (non-cash) ----------

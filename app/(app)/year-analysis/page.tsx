@@ -147,7 +147,7 @@ export default async function YearAnalysisPage({
     loadFxRates(supabase),
     supabase
       .from('portfolio_snapshots')
-      .select('date, total_value_eur, total_realized_eur, total_unrealized_eur, updated_at')
+      .select('date, total_value_eur, total_realized_eur, total_unrealized_eur, updated_at, snapshot_source')
       .order('date', { ascending: true })
       .returns<SnapshotForAudit[]>(),
     supabase
