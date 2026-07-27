@@ -4,7 +4,7 @@ import { useState, useMemo } from 'react'
 import Link from 'next/link'
 import { money, fmtDate } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
-import { CATEGORIES } from '@/lib/domain/constants'
+import { CATEGORIES, isCashLikeInvestment } from '@/lib/domain/constants'
 import { InvestmentRow } from './investment-row'
 import type { InvestmentMetrics } from '@/lib/domain/calculations'
 import type { Investment, InvestmentType } from '@/types/database'
@@ -433,7 +433,8 @@ export function InvestmentsList({ rows }: { rows: PreparedRow[] }) {
           {/* Mobile cards */}
           <ul className="md:hidden divide-y divide-slate-100">
             {filtered.map(({ inv, m, dailyChangeEur, dailyChangePct }) => {
-              const showPL = m.totalEverInvested > 0
+              const isCashLike = isCashLikeInvestment(inv)
+              const showPL = !isCashLike && m.totalEverInvested > 0
               const plTone =
                 m.totalProfit > 0
                   ? 'text-emerald-600'
@@ -476,12 +477,14 @@ export function InvestmentsList({ rows }: { rows: PreparedRow[] }) {
                       <div className="text-sm text-slate-900 tabular-nums">
                         {money(m.currentValue, 'EUR')}
                       </div>
-                      <div className={`text-xs tabular-nums ${plTone}`}>
-                        {showPL
-                          ? m.totalProfitPct !== null
-                            ? pct(m.totalProfitPct)
-                            : '—'
-                          : '—'}
+                      <div className={`text-xs tabular-nums ${isCashLike ? 'text-slate-400' : plTone}`}>
+                        {isCashLike
+                          ? 'Not applicable'
+                          : showPL
+                            ? m.totalProfitPct !== null
+                              ? pct(m.totalProfitPct)
+                              : '—'
+                            : '—'}
                       </div>
                       {dailyChangeEur !== null && (
                         <div className={`text-xs tabular-nums ${dailyTone}`}>

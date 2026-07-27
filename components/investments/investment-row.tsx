@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { money, fmtDate } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
+import { isCashLikeInvestment } from '@/lib/domain/constants'
 import type { InvestmentMetrics } from '@/lib/domain/calculations'
 import type { Investment } from '@/types/database'
 
@@ -19,7 +20,8 @@ export function InvestmentRow({ inv, m, dailyChangeEur, dailyChangePct }: Props)
   const router = useRouter()
   const href = `/investments/${inv.id}`
 
-  const showPL = m.totalEverInvested > 0
+  const isCashLike = isCashLikeInvestment(inv)
+  const showPL = !isCashLike && m.totalEverInvested > 0
   const plTone =
     m.totalProfit > 0
       ? 'text-emerald-600'
@@ -85,8 +87,10 @@ export function InvestmentRow({ inv, m, dailyChangeEur, dailyChangePct }: Props)
         {money(m.currentValue, 'EUR')}
       </td>
 
-      <td className={`px-6 py-4 text-right text-sm tabular-nums ${plTone}`}>
-        {showPL ? (
+      <td className={`px-6 py-4 text-right text-sm tabular-nums ${isCashLike ? '' : plTone}`}>
+        {isCashLike ? (
+          <span className="text-slate-400">Not applicable</span>
+        ) : showPL ? (
           <>
             <div>{money(m.totalProfit, 'EUR')}</div>
             <div className="text-xs">
