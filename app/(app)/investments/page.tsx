@@ -4,6 +4,7 @@ import { PageHeader } from '@/components/ui/page-header'
 import { computeInvestmentMetrics } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
 import { hasUnits } from '@/lib/domain/constants'
+import { computeInvestmentYtdRows } from '@/lib/domain/year-analysis'
 import { RefreshPortfolioButton } from '@/components/dashboard/refresh-portfolio-button'
 import { InvestmentsList } from '@/components/investments/investments-list'
 import type { PrevSnap } from '@/components/investments/investment-row'
@@ -62,6 +63,10 @@ export default async function InvestmentsPage() {
     }
   }
 
+  const currentYear = new Date().getFullYear()
+  const ytdRows = computeInvestmentYtdRows(investments, transactions, currentYear, fxRates)
+  const ytdByInvestmentId = new Map(ytdRows.map((r) => [r.investmentId, r]))
+
   const preparedRows: PreparedRow[] = investments.map((inv) => {
     const m = computeInvestmentMetrics(inv, transactions, fxRates)
     const prevSnap = prevSnapMap.get(inv.id) ?? null
@@ -88,7 +93,9 @@ export default async function InvestmentsPage() {
       }
     }
 
-    return { inv, m, dailyChangeEur, dailyChangePct }
+    const ytd = ytdByInvestmentId.get(inv.id) ?? null
+
+    return { inv, m, dailyChangeEur, dailyChangePct, ytd }
   })
 
   return (
@@ -134,7 +141,7 @@ export default async function InvestmentsPage() {
       )}
 
       {!error && preparedRows.length > 0 && (
-        <InvestmentsList rows={preparedRows} />
+        <InvestmentsList rows={preparedRows} ytdYear={currentYear} />
       )}
     </div>
   )

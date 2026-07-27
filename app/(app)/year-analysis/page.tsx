@@ -233,11 +233,18 @@ export default async function YearAnalysisPage({
         </div>
       )}
 
-      {summary.valuationIsApproximate && (
+      {summary.valuationIsApproximate && year !== 2025 && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           Past-year unrealized P/L uses current prices unless historical snapshots/prices are available — {year}&apos;s
           quantities and cost basis are exact (from your transaction history), but they&apos;re valued at today&apos;s
           prices, not {year} year-end prices.
+        </div>
+      )}
+
+      {year === 2025 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          2025 is indicative: DEGIRO 2025 cashflow dates still use bulk rows, and open-position P/L may use current
+          prices rather than exact 2025 year-end prices.
         </div>
       )}
 
@@ -252,7 +259,8 @@ export default async function YearAnalysisPage({
       {/* Summary cards */}
       {summary.startValueDate === '2025-12-31' && (
         <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-          P/L change from year start is approximate until the 2025-12-31 snapshot can be verified.
+          Start value is corrected from official platform statements. Historical snapshot P/L fields for 2025-12-31
+          are not fully reconstructed, so P/L bridge details remain approximate.
         </p>
       )}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -282,7 +290,7 @@ export default async function YearAnalysisPage({
               ? signedMoney(summary.growthExcludingContributionsEur)
               : '—'
           }
-          hint="End minus start minus net contributions — a euro bridge figure, not a % return"
+          hint="Selected-year value change after removing external cashflows."
           tone={
             summary.growthExcludingContributionsEur === null
               ? 'neutral'
@@ -296,7 +304,7 @@ export default async function YearAnalysisPage({
         <StatCard
           label="Modified Dietz return"
           value={pctCell(summary.modifiedDietzReturnPercent)}
-          hint="Approximate — weights contributions by how long they were invested"
+          hint="Approximate selected-year return adjusted for cashflow timing."
           tone={
             summary.modifiedDietzReturnPercent === null
               ? 'neutral'
@@ -308,24 +316,24 @@ export default async function YearAnalysisPage({
           }
         />
         <StatCard
-          label="Realized P/L this year"
+          label="Realized P/L from sales this year"
           value={signedMoney(summary.realizedPLInYearEur)}
-          hint="Profit/loss locked in by sells (and interest/fees) this year"
+          hint="Recognized this year, but gains may have built up in earlier years."
           tone={summary.realizedPLInYearEur > 0 ? 'positive' : summary.realizedPLInYearEur < 0 ? 'negative' : 'neutral'}
         />
         <StatCard
-          label={isCurrentYear ? 'Current unrealized P/L' : 'Unrealized P/L (approx.)'}
+          label={isCurrentYear ? 'Current open-position P/L' : 'Unrealized P/L (approx.)'}
           value={signedMoney(summary.currentUnrealizedPLEur)}
-          hint="Excludes cash — not necessarily generated inside this year, see note above"
+          hint="Open positions at today's prices; not necessarily generated this year."
           tone={summary.currentUnrealizedPLEur > 0 ? 'positive' : summary.currentUnrealizedPLEur < 0 ? 'negative' : 'neutral'}
         />
         <StatCard
-          label="Current investment P/L"
+          label="Realized this year + current open P/L"
           value={signedMoney(summary.totalPLEur)}
           hint={
             summary.totalProfitLossPercent !== null
-              ? `${pctCell(summary.totalProfitLossPercent)} of current cost basis · Realized P/L + current unrealized P/L, cash excluded.`
-              : 'Realized P/L + current unrealized P/L, cash excluded.'
+              ? `${pctCell(summary.totalProfitLossPercent)} of current cost basis. Not the same as selected-year return — use Growth after contributions / Modified Dietz for performance.`
+              : 'Not the same as selected-year return — use Growth after contributions / Modified Dietz for performance.'
           }
           tone={summary.totalPLEur > 0 ? 'positive' : summary.totalPLEur < 0 ? 'negative' : 'neutral'}
         />
@@ -364,7 +372,9 @@ export default async function YearAnalysisPage({
       {/* Top winners / losers */}
       <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
         <h2 className="text-base font-semibold text-slate-900 mb-1">Top winners / losers — {year}</h2>
-        <p className="text-sm text-slate-500 mb-3">Ranked by Current investment P/L. Cash excluded.</p>
+        <p className="text-sm text-slate-500 mb-3">
+          Ranked by Realized this year + current open P/L. Cash excluded.
+        </p>
         <AssetPnlRankingChart rows={pnlRanking} />
       </div>
 
@@ -391,8 +401,18 @@ export default async function YearAnalysisPage({
                     <th className="text-right px-4 py-3.5 whitespace-nowrap">Sold</th>
                     <th className="text-right px-4 py-3.5 whitespace-nowrap">Realized P/L (year)</th>
                     <th className="text-right px-4 py-3.5 whitespace-nowrap">Unrealized P/L</th>
-                    <th className="text-right px-4 py-3.5 whitespace-nowrap">Current investment P/L</th>
-                    <th className="text-right px-4 py-3.5 whitespace-nowrap">Current investment P/L %</th>
+                    <th
+                      className="text-right px-4 py-3.5 whitespace-nowrap"
+                      title="Realized this year + current open P/L. Not the same as selected-year return."
+                    >
+                      Realized + open P/L
+                    </th>
+                    <th
+                      className="text-right px-4 py-3.5 whitespace-nowrap"
+                      title="Realized this year + current open P/L, as a % of current cost basis. Not the same as selected-year return."
+                    >
+                      Realized + open P/L %
+                    </th>
                     <th className="text-right px-4 py-3.5 whitespace-nowrap">Fees</th>
                     <th className="text-right px-4 py-3.5 whitespace-nowrap">Div/interest</th>
                   </tr>
@@ -469,8 +489,18 @@ export default async function YearAnalysisPage({
                     <th className="text-right px-4 py-3.5 whitespace-nowrap">Sold</th>
                     <th className="text-right px-4 py-3.5 whitespace-nowrap">Realized P/L (year)</th>
                     <th className="text-right px-4 py-3.5 whitespace-nowrap">Unrealized P/L</th>
-                    <th className="text-right px-4 py-3.5 whitespace-nowrap">Current investment P/L</th>
-                    <th className="text-right px-4 py-3.5 whitespace-nowrap">Current investment P/L %</th>
+                    <th
+                      className="text-right px-4 py-3.5 whitespace-nowrap"
+                      title="Realized this year + current open P/L. Not the same as selected-year return."
+                    >
+                      Realized + open P/L
+                    </th>
+                    <th
+                      className="text-right px-4 py-3.5 whitespace-nowrap"
+                      title="Realized this year + current open P/L, as a % of current cost basis. Not the same as selected-year return."
+                    >
+                      Realized + open P/L %
+                    </th>
                     <th className="text-right px-4 py-3.5 whitespace-nowrap">Current value</th>
                     <th className="text-left px-4 py-3.5 whitespace-nowrap">Status</th>
                   </tr>
@@ -564,8 +594,8 @@ export default async function YearAnalysisPage({
 
       <ul className="text-xs text-slate-400 leading-relaxed px-1 space-y-1 list-disc list-inside">
         <li>Cash is included in portfolio value, but excluded from investment P/L.</li>
-        <li>Current unrealized P/L uses current prices/FX, not historical prices.</li>
-        <li>Growth after contributions is approximate; Modified Dietz accounts for contribution timing.</li>
+        <li>Current open-position P/L uses current prices/FX, not historical prices.</li>
+        <li>Growth after contributions is the selected-year euro result; Modified Dietz is the selected-year % return, adjusted for contribution timing.</li>
       </ul>
     </div>
   )

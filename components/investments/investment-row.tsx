@@ -5,6 +5,7 @@ import { money, fmtDate } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
 import { isCashLikeInvestment } from '@/lib/domain/constants'
 import type { InvestmentMetrics } from '@/lib/domain/calculations'
+import type { InvestmentYtdRow } from '@/lib/domain/year-analysis'
 import type { Investment } from '@/types/database'
 
 export type PrevSnap = { value_eur: number; quantity: number | null }
@@ -14,9 +15,43 @@ type Props = {
   m: InvestmentMetrics
   dailyChangeEur: number | null
   dailyChangePct: number | null
+  ytd: InvestmentYtdRow | null
 }
 
-export function InvestmentRow({ inv, m, dailyChangeEur, dailyChangePct }: Props) {
+export function YtdCell({ ytd }: { ytd: InvestmentYtdRow | null }) {
+  if (!ytd || ytd.ytdReturnPercent === null) {
+    return (
+      <span
+        className="text-slate-400"
+        title={ytd?.unavailableReason ?? 'YTD unavailable: missing year-start valuation.'}
+      >
+        —
+      </span>
+    )
+  }
+  const tone =
+    ytd.ytdReturnPercent > 0
+      ? 'text-emerald-600'
+      : ytd.ytdReturnPercent < 0
+        ? 'text-rose-600'
+        : 'text-slate-900'
+  return (
+    <div title={ytd.isApproximate ? 'Approximate — uses today’s price for the year-start valuation.' : undefined}>
+      <div className={tone}>
+        {ytd.ytdReturnPercent >= 0 ? '+' : ''}
+        {ytd.ytdReturnPercent.toFixed(1)}%
+      </div>
+      {ytd.ytdGrowthEur !== null && (
+        <div className="text-xs text-slate-400">
+          {ytd.ytdGrowthEur >= 0 ? '+' : ''}
+          {money(ytd.ytdGrowthEur, 'EUR')}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function InvestmentRow({ inv, m, dailyChangeEur, dailyChangePct, ytd }: Props) {
   const router = useRouter()
   const href = `/investments/${inv.id}`
 
@@ -100,6 +135,10 @@ export function InvestmentRow({ inv, m, dailyChangeEur, dailyChangePct }: Props)
         ) : (
           <span className="text-slate-400">—</span>
         )}
+      </td>
+
+      <td className="px-6 py-4 text-right text-sm tabular-nums">
+        <YtdCell ytd={ytd} />
       </td>
 
       <td className={`px-6 py-4 text-right text-sm tabular-nums ${dailyTone}`}>

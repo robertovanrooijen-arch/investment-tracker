@@ -5,8 +5,10 @@ import Link from 'next/link'
 import { money, fmtDate } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
 import { CATEGORIES, isCashLikeInvestment } from '@/lib/domain/constants'
+import { combineInvestmentYtd } from '@/lib/domain/year-analysis'
 import { InvestmentRow } from './investment-row'
 import type { InvestmentMetrics } from '@/lib/domain/calculations'
+import type { InvestmentYtdRow } from '@/lib/domain/year-analysis'
 import type { Investment, InvestmentType } from '@/types/database'
 
 export type PreparedRow = {
@@ -14,6 +16,7 @@ export type PreparedRow = {
   m: InvestmentMetrics
   dailyChangeEur: number | null
   dailyChangePct: number | null
+  ytd: InvestmentYtdRow | null
 }
 
 type SortKey =
@@ -23,6 +26,7 @@ type SortKey =
   | 'value'
   | 'pl_eur'
   | 'pl_pct'
+  | 'ytd_pct'
   | 'daily_eur'
   | 'daily_pct'
   | 'updated'
@@ -35,6 +39,7 @@ const DEFAULT_DIR: Record<SortKey, SortDir> = {
   value: 'desc',
   pl_eur: 'desc',
   pl_pct: 'desc',
+  ytd_pct: 'desc',
   daily_eur: 'desc',
   daily_pct: 'desc',
   updated: 'desc',
@@ -47,6 +52,8 @@ const MOBILE_SORT_OPTIONS: { label: string; value: string }[] = [
   { label: 'P/L €: worst first', value: 'pl_eur:asc' },
   { label: 'P/L %: best first', value: 'pl_pct:desc' },
   { label: 'P/L %: worst first', value: 'pl_pct:asc' },
+  { label: 'YTD %: best first', value: 'ytd_pct:desc' },
+  { label: 'YTD %: worst first', value: 'ytd_pct:asc' },
   { label: 'Daily €: best first', value: 'daily_eur:desc' },
   { label: 'Daily %: best first', value: 'daily_pct:desc' },
   { label: 'Name: A → Z', value: 'name:asc' },
@@ -62,9 +69,10 @@ type SortThProps = {
   currentDir: SortDir
   onSort: (key: SortKey) => void
   className?: string
+  title?: string
 }
 
-function SortTh({ label, col, currentKey, currentDir, onSort, className = '' }: SortThProps) {
+function SortTh({ label, col, currentKey, currentDir, onSort, className = '', title }: SortThProps) {
   const active = col === currentKey
   return (
     <th
@@ -72,6 +80,7 @@ function SortTh({ label, col, currentKey, currentDir, onSort, className = '' }: 
         active ? 'text-slate-900' : 'text-slate-500 hover:text-slate-700'
       } ${className}`}
       onClick={() => onSort(col)}
+      title={title}
     >
       {label}
       {active && (
@@ -112,7 +121,7 @@ function FilterPill({ label, active, onClick, tone }: FilterPillProps) {
 const selectClass =
   'rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-slate-300'
 
-export function InvestmentsList({ rows }: { rows: PreparedRow[] }) {
+export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYear: number }) {
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<InvestmentType | 'all'>('all')
   const [platformFilter, setPlatformFilter] = useState('all')
@@ -174,6 +183,7 @@ export function InvestmentsList({ rows }: { rows: PreparedRow[] }) {
         case 'value':     av = a.m.currentValue;    bv = b.m.currentValue;    break
         case 'pl_eur':    av = a.m.totalProfit;     bv = b.m.totalProfit;     break
         case 'pl_pct':    av = a.m.totalProfitPct;  bv = b.m.totalProfitPct;  break
+        case 'ytd_pct':   av = a.ytd?.ytdReturnPercent ?? null; bv = b.ytd?.ytdReturnPercent ?? null; break
         case 'daily_eur': av = a.dailyChangeEur;    bv = b.dailyChangeEur;    break
         case 'daily_pct': av = a.dailyChangePct;    bv = b.dailyChangePct;    break
         case 'updated':   av = a.inv.updated_at;    bv = b.inv.updated_at;    break
@@ -186,6 +196,56 @@ export function InvestmentsList({ rows }: { rows: PreparedRow[] }) {
       return factor * ((av as number) - (bv as number))
     })
   }, [rows, search, typeFilter, platformFilter, profitFilter, positionFilter, sortKey, sortDir])
+
+  // Aggregates the currently visible/filtered rows only — never the full,
+  // unfiltered list. Cash-like rows contribute their value but not their P/L
+  // (matching the row-level "Not applicable" rule), and every percentage
+  // here is a weighted total, never an average of per-row percentages.
+  const totals = useMemo(() => {
+    let value = 0
+    let pl = 0
+    let dailyEur = 0
+    let priorValue = 0
+    let hasDailyData = false
+    let latestUpdated: string | null = null
+
+    for (const r of filtered) {
+      value += r.m.currentValue
+      if (!isCashLikeInvestment(r.inv)) {
+        pl += r.m.totalProfit
+      }
+      if (r.dailyChangeEur !== null) {
+        dailyEur += r.dailyChangeEur
+        priorValue += r.m.currentValue - r.dailyChangeEur
+        hasDailyData = true
+      }
+      if (!latestUpdated || r.inv.updated_at > latestUpdated) latestUpdated = r.inv.updated_at
+    }
+
+    // No total P/L % here, deliberately: visible rows can mix open, closed,
+    // realized-only, and cash-excluded positions, and there is no single
+    // well-defined denominator that makes "sum of P/L ÷ X" meaningful across
+    // that mix (an early version divided by summed totalEverInvested, which
+    // produced nonsense like 1140% whenever closed positions with small
+    // original cost sat next to large open ones). Dashboard's all-time P/L %
+    // is the well-defined app-wide number — see the tooltip on this cell.
+    const dailyPct = hasDailyData && priorValue !== 0 ? (dailyEur / priorValue) * 100 : null
+
+    const ytdRows = filtered
+      .map((r) => r.ytd)
+      .filter((y): y is InvestmentYtdRow => y !== null)
+    const ytd = combineInvestmentYtd(ytdRows, ytdYear)
+
+    return {
+      value,
+      pl,
+      dailyEur: hasDailyData ? dailyEur : null,
+      dailyPct: hasDailyData ? dailyPct : null,
+      ytdGrowthEur: ytd.growthEur,
+      ytdReturnPercent: ytd.returnPercent,
+      latestUpdated,
+    }
+  }, [filtered, ytdYear])
 
   function handleSort(key: SortKey) {
     if (key === sortKey) {
@@ -399,6 +459,16 @@ export function InvestmentsList({ rows }: { rows: PreparedRow[] }) {
                   currentDir={sortDir}
                   onSort={handleSort}
                   className="text-right"
+                  title="All-time cost-basis P/L. Cash excluded."
+                />
+                <SortTh
+                  label="Position YTD"
+                  col="ytd_pct"
+                  currentKey={sortKey}
+                  currentDir={sortDir}
+                  onSort={handleSort}
+                  className="text-right"
+                  title="Position-level selected-year return after investment flows. Not the same as whole-portfolio Modified Dietz."
                 />
                 <SortTh
                   label="Daily"
@@ -407,6 +477,7 @@ export function InvestmentsList({ rows }: { rows: PreparedRow[] }) {
                   currentDir={sortDir}
                   onSort={handleSort}
                   className="text-right"
+                  title="Change since previous portfolio snapshot or refresh."
                 />
                 <SortTh
                   label="Updated"
@@ -418,21 +489,110 @@ export function InvestmentsList({ rows }: { rows: PreparedRow[] }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.map(({ inv, m, dailyChangeEur, dailyChangePct }) => (
+              {filtered.map(({ inv, m, dailyChangeEur, dailyChangePct, ytd }) => (
                 <InvestmentRow
                   key={inv.id}
                   inv={inv}
                   m={m}
                   dailyChangeEur={dailyChangeEur}
                   dailyChangePct={dailyChangePct}
+                  ytd={ytd}
                 />
               ))}
             </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-slate-200 bg-slate-50 text-sm font-semibold text-slate-900">
+                <td className="px-6 py-3.5" colSpan={3}>
+                  Total
+                  <span className="ml-1 font-normal text-slate-400">
+                    ({filtered.length} shown)
+                  </span>
+                </td>
+                <td className="px-6 py-3.5 text-right tabular-nums">{money(totals.value, 'EUR')}</td>
+                <td
+                  className="px-6 py-3.5 text-right tabular-nums"
+                  title="Total P/L % is hidden because visible rows can mix open, closed, realized, unrealized, and cash-excluded positions. Use Dashboard for all-time portfolio P/L %."
+                >
+                  <div className={totals.pl > 0 ? 'text-emerald-600' : totals.pl < 0 ? 'text-rose-600' : ''}>
+                    {money(totals.pl, 'EUR')}
+                  </div>
+                  <div className="text-xs font-normal text-slate-400">—</div>
+                </td>
+                <td
+                  className="px-6 py-3.5 text-right tabular-nums"
+                  title="Weighted YTD for visible rows with reliable start valuation. Excludes rows shown as unavailable."
+                >
+                  {totals.ytdReturnPercent !== null ? (
+                    <>
+                      <div
+                        className={
+                          totals.ytdReturnPercent > 0
+                            ? 'text-emerald-600'
+                            : totals.ytdReturnPercent < 0
+                              ? 'text-rose-600'
+                              : ''
+                        }
+                      >
+                        {totals.ytdReturnPercent >= 0 ? '+' : ''}
+                        {totals.ytdReturnPercent.toFixed(1)}%
+                      </div>
+                      {totals.ytdGrowthEur !== null && (
+                        <div className="text-xs font-normal text-slate-400">
+                          {totals.ytdGrowthEur >= 0 ? '+' : ''}
+                          {money(totals.ytdGrowthEur, 'EUR')}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-slate-400">—</span>
+                  )}
+                </td>
+                <td className="px-6 py-3.5 text-right tabular-nums">
+                  {totals.dailyEur !== null ? (
+                    <>
+                      <div className={totals.dailyEur > 0 ? 'text-emerald-600' : totals.dailyEur < 0 ? 'text-rose-600' : ''}>
+                        {totals.dailyEur >= 0 ? '+' : ''}
+                        {money(totals.dailyEur, 'EUR')}
+                      </div>
+                      <div className="text-xs font-normal text-slate-400">
+                        {totals.dailyPct !== null
+                          ? `${totals.dailyPct >= 0 ? '+' : ''}${totals.dailyPct.toFixed(2)}%`
+                          : '—'}
+                      </div>
+                    </>
+                  ) : (
+                    <span className="text-slate-400">—</span>
+                  )}
+                </td>
+                <td className="px-6 py-3.5 text-sm font-normal text-slate-500">
+                  {totals.latestUpdated ? fmtDate(totals.latestUpdated) : '—'}
+                </td>
+              </tr>
+            </tfoot>
           </table>
+
+          {/* Mobile totals summary */}
+          <div className="md:hidden flex items-center justify-between px-5 py-3 bg-slate-50 border-b border-slate-100 text-sm">
+            <span className="font-semibold text-slate-900">
+              Total <span className="font-normal text-slate-400">({filtered.length} shown)</span>
+            </span>
+            <span className="text-right">
+              <div className="font-semibold text-slate-900 tabular-nums">{money(totals.value, 'EUR')}</div>
+              <div
+                className="text-xs text-slate-500 tabular-nums"
+                title="Weighted YTD for visible rows with reliable start valuation. Excludes rows shown as unavailable."
+              >
+                P/L {money(totals.pl, 'EUR')}
+                {' · '}
+                Computable Position YTD{' '}
+                {totals.ytdReturnPercent !== null ? `${totals.ytdReturnPercent >= 0 ? '+' : ''}${totals.ytdReturnPercent.toFixed(1)}%` : '—'}
+              </div>
+            </span>
+          </div>
 
           {/* Mobile cards */}
           <ul className="md:hidden divide-y divide-slate-100">
-            {filtered.map(({ inv, m, dailyChangeEur, dailyChangePct }) => {
+            {filtered.map(({ inv, m, dailyChangeEur, dailyChangePct, ytd }) => {
               const isCashLike = isCashLikeInvestment(inv)
               const showPL = !isCashLike && m.totalEverInvested > 0
               const plTone =
@@ -486,6 +646,20 @@ export function InvestmentsList({ rows }: { rows: PreparedRow[] }) {
                               : '—'
                             : '—'}
                       </div>
+                      {ytd?.ytdReturnPercent !== null && ytd?.ytdReturnPercent !== undefined && (
+                        <div
+                          className={`text-xs tabular-nums ${
+                            ytd.ytdReturnPercent > 0
+                              ? 'text-emerald-600'
+                              : ytd.ytdReturnPercent < 0
+                                ? 'text-rose-600'
+                                : 'text-slate-500'
+                          }`}
+                        >
+                          YTD {ytd.ytdReturnPercent >= 0 ? '+' : ''}
+                          {ytd.ytdReturnPercent.toFixed(1)}%
+                        </div>
+                      )}
                       {dailyChangeEur !== null && (
                         <div className={`text-xs tabular-nums ${dailyTone}`}>
                           {dailyChangeEur >= 0 ? '+' : ''}

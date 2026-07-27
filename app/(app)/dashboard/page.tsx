@@ -158,16 +158,19 @@ export default async function DashboardPage() {
               label="Profit / loss"
               value={hasHistory ? money(metrics.totalProfit, 'EUR') : '—'}
               hint={
-                hasHistory
-                  ? `${
-                      metrics.totalProfitPct !== null
-                        ? pct(metrics.totalProfitPct)
-                        : '—'
-                    } · ${money(metrics.totalRealized, 'EUR')} realized · ${money(
-                      metrics.totalUnrealized,
-                      'EUR',
-                    )} unrealized`
-                  : 'Record a buy or deposit to start tracking gains'
+                hasHistory ? (
+                  <>
+                    {metrics.totalProfitPct !== null ? pct(metrics.totalProfitPct) : '—'} ·{' '}
+                    {money(metrics.totalRealized, 'EUR')} realized ·{' '}
+                    {money(metrics.totalUnrealized, 'EUR')} unrealized
+                    <br />
+                    <span className="text-slate-400">
+                      All-time cost-basis P/L since each position was opened. Cash excluded.
+                    </span>
+                  </>
+                ) : (
+                  'Record a buy or deposit to start tracking gains'
+                )
               }
               tone={hasHistory ? profitTone : 'neutral'}
             />

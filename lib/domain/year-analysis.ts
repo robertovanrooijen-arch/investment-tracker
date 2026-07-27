@@ -404,6 +404,185 @@ export function computeAssetYearRows(
   return rows
 }
 
+// ---------- Per-investment YTD (year-to-date) ----------
+//
+// Reuses computeAssetYearRows (for in-year buy/sell/quantity deltas) and the
+// same Modified Dietz weighting computeYearPortfolioSummary uses — just
+// applied per investment, treating that investment's own buy/sell
+// transactions as the "flow" in/out of the position (there is no other
+// concept of external cashflow at the single-investment level).
+//
+// A year-start *value* still requires a year-start *price*, which this app
+// has no stored snapshot for (investment_snapshots is empty pre-2026). When
+// the position was already open at the start of the year, this falls back to
+// today's price — same disclosed approximation as valuationIsApproximate
+// elsewhere — and is flagged via isApproximate. When even that isn't
+// possible (no live price on a closed position), YTD is left unavailable
+// rather than invented.
+
+export type InvestmentYtdRow = {
+  investmentId: string
+  startValueEur: number | null
+  // Same figure as the matching AssetYearRow.currentValueEur; null when
+  // unavailable (cash-like, or no computable start value).
+  currentValueEur: number | null
+  datedFlows: DatedCashFlow[]
+  ytdGrowthEur: number | null
+  ytdReturnPercent: number | null
+  isApproximate: boolean
+  unavailableReason: string | null
+}
+
+function ytdPeriodEndIso(year: number): string {
+  return year >= new Date().getFullYear() ? todayIso() : `${year}-12-31`
+}
+
+export function computeInvestmentYtdRows(
+  investments: Investment[],
+  transactions: Transaction[],
+  year: number,
+  fxRates?: FxRates
+): InvestmentYtdRow[] {
+  const assetRows = computeAssetYearRows(investments, transactions, year, fxRates)
+  const assetRowById = new Map(assetRows.map((r) => [r.investmentId, r]))
+  const periodStart = `${year}-01-01`
+  const periodEnd = ytdPeriodEndIso(year)
+
+  const unavailable = (
+    investmentId: string,
+    reason: string,
+    currentValueEur: number | null = null
+  ): InvestmentYtdRow => ({
+    investmentId,
+    startValueEur: null,
+    currentValueEur,
+    datedFlows: [],
+    ytdGrowthEur: null,
+    ytdReturnPercent: null,
+    isApproximate: false,
+    unavailableReason: reason,
+  })
+
+  return investments.map((inv) => {
+    if (isCashLikeInvestment(inv)) {
+      return unavailable(inv.id, 'Cash-like — YTD not applicable.')
+    }
+
+    const row = assetRowById.get(inv.id)
+    if (!row || !hasUnits(inv.type)) {
+      return unavailable(
+        inv.id,
+        row ? 'YTD unavailable for this investment type.' : `No activity in ${year}.`
+      )
+    }
+
+    const currentQty = row.currentQuantity ?? 0
+    const boughtInYear = row.quantityBoughtInYear ?? 0
+    const soldInYear = row.quantitySoldInYear ?? 0
+    const startQty = currentQty - boughtInYear + soldInYear
+
+    let startValueEur: number | null
+    let isApproximate = false
+    if (Math.abs(startQty) < 1e-9) {
+      // Nothing was held at the start of the year — no price needed, exact.
+      startValueEur = 0
+    } else if (Math.abs(currentQty) < 1e-9) {
+      // Position is closed today. Its current_price (if any) belongs to
+      // whatever the price-refresh cron last fetched for its ticker/commodity
+      // class — an asset the position no longer holds — so it's not a usable
+      // stand-in for what this position was worth at the start of the year.
+      startValueEur = null
+    } else if (Math.abs(boughtInYear) < 1e-9 && Math.abs(soldInYear) < 1e-9) {
+      // Still open, but zero buy/sell activity in `year`. Falling back to
+      // today's price for the start value would make startValue === currentValue
+      // by construction (same price, same quantity) — always exactly 0%
+      // growth, silently hiding any real price movement rather than
+      // approximating it. Unavailable is more honest than a guaranteed-wrong
+      // "flat" result.
+      startValueEur = null
+    } else if (inv.current_price !== null) {
+      const priceCurrency = inv.currency ?? 'EUR'
+      const rateToEur = fxRates?.[priceCurrency] ?? 1
+      startValueEur = startQty * inv.current_price * rateToEur
+      isApproximate = true
+    } else {
+      startValueEur = null
+    }
+
+    if (startValueEur === null) {
+      return unavailable(
+        inv.id,
+        'YTD unavailable: missing year-start valuation.',
+        row.currentValueEur
+      )
+    }
+
+    const datedFlows: DatedCashFlow[] = sortChronologically(
+      transactions.filter((t) => t.investment_id === inv.id && inYear(t.date, year))
+    )
+      .filter(
+        (t) =>
+          (t.type === 'buy' || t.type === 'sell') && t.quantity !== null && t.price_per_unit !== null
+      )
+      .map((t) => {
+        const grossNative = (t.quantity as number) * (t.price_per_unit as number)
+        const grossEur = grossToEur(grossNative, t, fxRates)
+        const feeEur = txFeeInEur(t, fxRates)
+        const amountEur = t.type === 'buy' ? grossEur + feeEur : -(grossEur - feeEur)
+        return { date: t.date, amountEur }
+      })
+
+    const netFlow = datedFlows.reduce((s, f) => s + f.amountEur, 0)
+    const ytdGrowthEur = row.currentValueEur - startValueEur - netFlow
+    const ytdReturnPercent = computeModifiedDietzReturnPercent(
+      startValueEur,
+      row.currentValueEur,
+      datedFlows,
+      periodStart,
+      periodEnd
+    )
+
+    return {
+      investmentId: inv.id,
+      startValueEur,
+      currentValueEur: row.currentValueEur,
+      datedFlows,
+      ytdGrowthEur,
+      ytdReturnPercent,
+      isApproximate,
+      unavailableReason: null,
+    }
+  })
+}
+
+// Combines a subset of InvestmentYtdRow (e.g. the currently visible/filtered
+// rows on the Investments page) into one weighted YTD result, using the same
+// Modified Dietz methodology as each individual row — never a plain average
+// of per-row percentages. Rows without a computable YTD are excluded from
+// the combination rather than treated as zero.
+export function combineInvestmentYtd(
+  rows: InvestmentYtdRow[],
+  year: number
+): { growthEur: number | null; returnPercent: number | null } {
+  const usable = rows.filter((r) => r.startValueEur !== null && r.currentValueEur !== null)
+  if (usable.length === 0) return { growthEur: null, returnPercent: null }
+
+  const startValueEur = usable.reduce((s, r) => s + (r.startValueEur ?? 0), 0)
+  const currentValueEur = usable.reduce((s, r) => s + (r.currentValueEur ?? 0), 0)
+  const datedFlows = usable.flatMap((r) => r.datedFlows)
+  const growthEur = usable.reduce((s, r) => s + (r.ytdGrowthEur ?? 0), 0)
+
+  const returnPercent = computeModifiedDietzReturnPercent(
+    startValueEur,
+    currentValueEur,
+    datedFlows,
+    `${year}-01-01`,
+    ytdPeriodEndIso(year)
+  )
+
+  return { growthEur, returnPercent }
+}
+
 // ---------- Asset-class summary ----------
 
 export type AssetClassSummary = {
@@ -577,7 +756,7 @@ export type CapitalFlowEntryForYear = {
 // A single dated external cash movement — positive means money entered the
 // portfolio, negative means it left. Used both to total net contributions
 // and to weight each flow's time-in-market for the Modified Dietz return.
-type DatedCashFlow = { date: string; amountEur: number }
+export type DatedCashFlow = { date: string; amountEur: number }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 
