@@ -5,6 +5,7 @@ import { computeInvestmentMetrics } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
 import { hasUnits } from '@/lib/domain/constants'
 import { computeInvestmentYtdRows } from '@/lib/domain/year-analysis'
+import type { InvestmentSnapshotForYtd } from '@/lib/domain/year-analysis'
 import { RefreshPortfolioButton } from '@/components/dashboard/refresh-portfolio-button'
 import { InvestmentsList } from '@/components/investments/investments-list'
 import type { PrevSnap } from '@/components/investments/investment-row'
@@ -22,7 +23,10 @@ export default async function InvestmentsPage() {
     return d.toISOString().slice(0, 10)
   })()
 
-  const [invRes, txRes, fxRes, snapRes, latestSnapRes] = await Promise.all([
+  const currentYear = new Date().getFullYear()
+  const ytdPeriodStartIso = `${currentYear}-01-01`
+
+  const [invRes, txRes, fxRes, snapRes, latestSnapRes, ytdSnapRes] = await Promise.all([
     supabase
       .from('investments')
       .select('*')
@@ -42,6 +46,15 @@ export default async function InvestmentsPage() {
       .order('date', { ascending: false })
       .limit(1)
       .maybeSingle(),
+    // Source-backed per-investment start-of-year valuations (e.g. official
+    // year-end statements) — see computeInvestmentYtdRows. Separate from the
+    // 7-day daily-change query above; this only needs snapshots at/before
+    // the current year's first day.
+    supabase
+      .from('investment_snapshots')
+      .select('investment_id, date, value_eur')
+      .lte('date', ytdPeriodStartIso)
+      .returns<InvestmentSnapshotForYtd[]>(),
   ])
 
   const error = invRes.error
@@ -63,8 +76,12 @@ export default async function InvestmentsPage() {
     }
   }
 
-  const currentYear = new Date().getFullYear()
-  const ytdRows = computeInvestmentYtdRows(investments, transactions, currentYear, fxRates)
+  const ytdSnapshots: InvestmentSnapshotForYtd[] = (ytdSnapRes.data ?? []).map((s) => ({
+    investment_id: s.investment_id,
+    date: s.date,
+    value_eur: Number(s.value_eur),
+  }))
+  const ytdRows = computeInvestmentYtdRows(investments, transactions, currentYear, fxRates, ytdSnapshots)
   const ytdByInvestmentId = new Map(ytdRows.map((r) => [r.investmentId, r]))
 
   const preparedRows: PreparedRow[] = investments.map((inv) => {

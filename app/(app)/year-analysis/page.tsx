@@ -17,6 +17,7 @@ import {
   computeReconciliationAudit,
   type SnapshotForAudit,
   type CapitalFlowEntryForYear,
+  type InvestmentSnapshotForYtd,
   type AssetStatus,
   type AuditCheck,
   type AuditStatus,
@@ -143,7 +144,7 @@ export default async function YearAnalysisPage({
 }) {
   const supabase = await createClient()
 
-  const [invRes, txRes, fxRes, snapRes, flowRes] = await Promise.all([
+  const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes] = await Promise.all([
     supabase.from('investments').select('*').returns<Investment[]>(),
     supabase.from('transactions').select('*').returns<Transaction[]>(),
     loadFxRates(supabase),
@@ -156,6 +157,14 @@ export default async function YearAnalysisPage({
       .from('capital_flow_entries')
       .select('year, flow_date, direction, amount_eur')
       .returns<CapitalFlowEntryForYear[]>(),
+    // Source-backed per-investment valuations (e.g. official year-end
+    // statements) — see computeInvestmentYtdRows / computeAssetClassYtd.
+    // Fetched unfiltered (like portfolio_snapshots above) since the
+    // selected year isn't known until after this batch resolves.
+    supabase
+      .from('investment_snapshots')
+      .select('investment_id, date, value_eur')
+      .returns<InvestmentSnapshotForYtd[]>(),
   ])
 
   const investments = invRes.data ?? []
@@ -163,6 +172,11 @@ export default async function YearAnalysisPage({
   const fxRates = fxRes.rates
   const snapshots = snapRes.data ?? []
   const capitalFlowEntries = flowRes.data ?? []
+  const investmentSnapshots: InvestmentSnapshotForYtd[] = (invSnapRes.data ?? []).map((s) => ({
+    investment_id: s.investment_id,
+    date: s.date,
+    value_eur: Number(s.value_eur),
+  }))
 
   const availableYears = getAvailableYears(transactions)
   const { year: yearParam } = await searchParams
@@ -174,7 +188,7 @@ export default async function YearAnalysisPage({
 
   const assetRows = computeAssetYearRows(investments, transactions, year, fxRates)
   const classSummaries = computeAssetClassSummaries(assetRows)
-  const classYtd = computeAssetClassYtd(investments, transactions, year, fxRates)
+  const classYtd = computeAssetClassYtd(investments, transactions, year, fxRates, investmentSnapshots)
   const summary = computeYearPortfolioSummary(
     year,
     assetRows,

@@ -504,11 +504,36 @@ function ytdPercentIsMeaningful(
   return denominator >= MIN_YTD_CAPITAL_BASE_FRACTION * capitalBase
 }
 
+// A source-backed per-investment valuation (investment_snapshots.value_eur)
+// for a specific date — e.g. an official year-end platform statement,
+// entered via a persisted, audited correction script rather than the cron.
+// When one exists on or before a year's first day, it replaces the
+// quantity/today's-price-derived start value below with an exact figure.
+export type InvestmentSnapshotForYtd = {
+  investment_id: string
+  date: string
+  value_eur: number
+}
+
+function findYtdStartSnapshot(
+  investmentId: string,
+  periodStartIso: string,
+  snapshots: InvestmentSnapshotForYtd[]
+): InvestmentSnapshotForYtd | null {
+  let latest: InvestmentSnapshotForYtd | null = null
+  for (const s of snapshots) {
+    if (s.investment_id !== investmentId || s.date > periodStartIso) continue
+    if (!latest || s.date > latest.date) latest = s
+  }
+  return latest
+}
+
 export function computeInvestmentYtdRows(
   investments: Investment[],
   transactions: Transaction[],
   year: number,
-  fxRates?: FxRates
+  fxRates?: FxRates,
+  investmentSnapshots: InvestmentSnapshotForYtd[] = []
 ): InvestmentYtdRow[] {
   const assetRows = computeAssetYearRows(investments, transactions, year, fxRates)
   const assetRowById = new Map(assetRows.map((r) => [r.investmentId, r]))
@@ -549,9 +574,18 @@ export function computeInvestmentYtdRows(
     const soldInYear = row.quantitySoldInYear ?? 0
     const startQty = currentQty - boughtInYear + soldInYear
 
+    const snapshotStart = findYtdStartSnapshot(inv.id, periodStart, investmentSnapshots)
+
     let startValueEur: number | null
     let isApproximate = false
-    if (Math.abs(startQty) < 1e-9) {
+    if (snapshotStart) {
+      // Source-backed per-investment snapshot at/before year start — the
+      // most reliable value available. Takes priority over every derivation
+      // below, including the exact startQty===0 case: a real recorded value
+      // (even €0, e.g. Trade Republic before the account existed) is still
+      // more authoritative than inferring it from quantity deltas.
+      startValueEur = snapshotStart.value_eur
+    } else if (Math.abs(startQty) < 1e-9) {
       // Nothing was held at the start of the year — no price needed, exact.
       startValueEur = 0
     } else if (Math.abs(currentQty) < 1e-9) {
@@ -681,9 +715,10 @@ export function computeAssetClassYtd(
   investments: Investment[],
   transactions: Transaction[],
   year: number,
-  fxRates?: FxRates
+  fxRates?: FxRates,
+  investmentSnapshots: InvestmentSnapshotForYtd[] = []
 ): AssetClassYtd[] {
-  const ytdRows = computeInvestmentYtdRows(investments, transactions, year, fxRates)
+  const ytdRows = computeInvestmentYtdRows(investments, transactions, year, fxRates, investmentSnapshots)
   const ytdByInvestmentId = new Map(ytdRows.map((r) => [r.investmentId, r]))
 
   const byType = new Map<InvestmentType, InvestmentYtdRow[]>()
