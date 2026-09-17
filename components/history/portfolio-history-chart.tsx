@@ -5,6 +5,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceArea,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -47,7 +48,31 @@ type Props = {
   portfolioSnapshots: PortfolioSnapshot[]
   invSnapshots: InvSnapshot[]
   livePoint?: LivePoint
+  // Defaults to '30d' (unchanged for existing callers, e.g. the History
+  // page). The YTD page passes 'all' with pre-filtered Jan-1-to-today data,
+  // so "All" within that already-scoped range means the full YTD period.
+  initialPreset?: Preset
+  // Hard lower bound on every preset (including '7d'/'30d'/etc, not just
+  // 'all') — undefined for existing callers (no effect on History). The
+  // YTD page passes the current year's Jan 1 so no preset can ever show
+  // data from a prior year, regardless of how portfolioSnapshots was
+  // fetched upstream.
+  rangeFloorIso?: string
+  // A single extra, REAL "opening" point — the known start-of-year
+  // portfolio value (computeYearPortfolioSummary.startValueEur/its
+  // page-level €0 fallback) — rendered before the earliest real sampled
+  // snapshot. undefined for existing callers (no effect on History). Only
+  // total value is known at this point, so only the total_value_eur (and
+  // per-type/cash breakdown) series stay blank here rather than fabricating
+  // a cost-basis/profit split that was never recorded. A visual gap (line
+  // break + shaded area) is drawn between this point and the first real
+  // sampled snapshot — never a connecting line implying known intermediate
+  // values. Inserted AFTER downsampling, so downsampleForPreset can never
+  // discard it.
+  openingPoint?: { date: string; totalValueEur: number }
 }
+
+type ChartRow = Record<string, number | string | null>
 
 // ── View mode ──────────────────────────────────────────────────────────────
 
@@ -189,28 +214,36 @@ function ChartTooltip({
 }) {
   if (!active || !payload?.length) return null
 
+  // A gap point (e.g. the YTD chart's opening-point breaker row) has no
+  // value for any series — show that honestly instead of a misleading 0.
+  const visible = payload.filter((entry) => entry.value !== null && entry.value !== undefined)
+
   return (
     <div className="min-w-[200px] rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg text-xs">
       <p className="mb-2 font-medium text-slate-700">{fmtLongDate(label ?? '')}</p>
-      <div className="space-y-1">
-        {payload.map((entry) => {
-          const val = typeof entry.value === 'number' ? entry.value : Number(entry.value)
-          return (
-            <div key={entry.dataKey} className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-1.5">
-                <span
-                  className="inline-block h-2 w-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: colorForKey(entry.dataKey) }}
-                />
-                <span className="text-slate-600">{entry.name}</span>
+      {visible.length === 0 ? (
+        <p className="text-slate-400">No historical snapshots</p>
+      ) : (
+        <div className="space-y-1">
+          {visible.map((entry) => {
+            const val = typeof entry.value === 'number' ? entry.value : Number(entry.value)
+            return (
+              <div key={entry.dataKey} className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: colorForKey(entry.dataKey) }}
+                  />
+                  <span className="text-slate-600">{entry.name}</span>
+                </div>
+                <span className="tabular-nums font-medium text-slate-900">
+                  {fmtValue(val, viewMode)}
+                </span>
               </div>
-              <span className="tabular-nums font-medium text-slate-900">
-                {fmtValue(val, viewMode)}
-              </span>
-            </div>
-          )
-        })}
-      </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -226,8 +259,8 @@ const DEFAULT_VISIBLE = new Set([
   'total_profit_eur',
 ])
 
-export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePoint }: Props) {
-  const [preset,       setPreset]       = useState<Preset>('30d')
+export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePoint, initialPreset, rangeFloorIso, openingPoint }: Props) {
+  const [preset,       setPreset]       = useState<Preset>(initialPreset ?? '30d')
   const [viewMode,     setViewMode]     = useState<ViewMode>('absolute')
   const [visibleSeries, setVisibleSeries] = useState<Set<string>>(new Set(DEFAULT_VISIBLE))
 
@@ -255,10 +288,10 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
   }, [invSnapshots, livePoint])
 
   // Step 1: date-range filter
-  const filtered = useMemo(
-    () => filterByPreset(portfolioSnapshots, preset),
-    [portfolioSnapshots, preset],
-  )
+  const filtered = useMemo(() => {
+    const byPreset = filterByPreset(portfolioSnapshots, preset)
+    return rangeFloorIso ? byPreset.filter((s) => s.date >= rangeFloorIso) : byPreset
+  }, [portfolioSnapshots, preset, rangeFloorIso])
 
   // Step 2: downsample to one representative point per calendar bucket.
   // This prevents annual anchors (2024-12-31, 2025-12-31) from appearing
@@ -318,7 +351,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
         assetValue = snap.total_value_eur
       }
 
-      const row: Record<string, number | string> = {
+      const row: ChartRow = {
         date:                snap.date,
         // Main series: portfolio_snapshots only — always matches Dashboard
         total_value_eur:     snap.total_value_eur,
@@ -337,21 +370,70 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
     })
   }, [sampled, invSnapshots, activeTypes, livePoint])
 
-  // Apply view-mode transformation relative to first visible data point
+  // Prepend the YTD page's known opening value (see openingPoint prop) as a
+  // real standalone point, plus one explicit "breaker" row (no value for
+  // any series) right after it so no line ever connects it to the first
+  // real sampled snapshot. Runs AFTER downsampling, so downsampleForPreset
+  // can never collapse/discard this point into a bucket with real data.
+  const chartDataWithOpening = useMemo<ChartRow[]>(() => {
+    if (!openingPoint) return chartData
+    const firstRealDate = chartData[0]?.date as string | undefined
+    if (!firstRealDate || openingPoint.date >= firstRealDate) return chartData
+
+    const openingRow: ChartRow = { date: openingPoint.date, total_value_eur: openingPoint.totalValueEur }
+
+    const dayAfterOpening = (() => {
+      const d = new Date(`${openingPoint.date}T00:00:00Z`)
+      d.setUTCDate(d.getUTCDate() + 1)
+      return d.toISOString().slice(0, 10)
+    })()
+
+    if (dayAfterOpening >= firstRealDate) {
+      // Adjacent dates, no room for a separate breaker row — the missing
+      // values on every other series already leave total_value_eur as the
+      // only connected key, so the gap still won't render as a fabricated
+      // line for anything else.
+      return [openingRow, ...chartData]
+    }
+
+    return [openingRow, { date: dayAfterOpening }, ...chartData]
+  }, [chartData, openingPoint])
+
+  // Apply view-mode transformation relative to the first REAL value for
+  // each series independently — not always row 0 as a whole, since the
+  // YTD page's opening point only carries a value for total_value_eur,
+  // leaving every other series to baseline off its own first real point
+  // exactly as before. Gaps (null/undefined) are preserved, never coerced
+  // to 0, so a Δ€/Δ% view can't turn "no data" into a fabricated number.
   const displayData = useMemo(() => {
-    if (viewMode === 'absolute' || chartData.length === 0) return chartData
+    if (viewMode === 'absolute' || chartDataWithOpening.length === 0) return chartDataWithOpening
 
     const numericKeys: string[] = [
       ...STATIC_SERIES.map((s) => s.key),
       ...activeTypes,
     ]
-    const first = chartData[0]
 
-    return chartData.map((row) => {
-      const out: Record<string, number | string> = { date: row.date as string }
+    const firstValueForKey = new Map<string, number>()
+    for (const key of numericKeys) {
+      for (const row of chartDataWithOpening) {
+        const v = row[key]
+        if (v !== null && v !== undefined) {
+          firstValueForKey.set(key, Number(v) || 0)
+          break
+        }
+      }
+    }
+
+    return chartDataWithOpening.map((row) => {
+      const out: ChartRow = { date: row.date as string }
       for (const key of numericKeys) {
-        const firstVal = Number(first[key]) || 0
-        const currVal  = Number(row[key])   || 0
+        const rawVal = row[key]
+        if (rawVal === null || rawVal === undefined) {
+          out[key] = null
+          continue
+        }
+        const firstVal = firstValueForKey.get(key) ?? 0
+        const currVal  = Number(rawVal) || 0
         if (viewMode === 'change_eur') {
           out[key] = currVal - firstVal
         } else {
@@ -360,7 +442,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
       }
       return out
     })
-  }, [chartData, viewMode, activeTypes])
+  }, [chartDataWithOpening, viewMode, activeTypes])
 
   // X-axis: time-aware tick boundaries snapped to actual data points
   const chartDates = useMemo(
@@ -408,9 +490,18 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
 
   // ── Summary header stats ───────────────────────────────────────────────
 
-  const hasSampled = sampled.length > 0
-  const startSnap  = hasSampled ? sampled[0] : null
-  const endSnap    = hasSampled ? sampled[sampled.length - 1] : null
+  // The opening point genuinely applies to this header/summary only when
+  // it actually precedes the first real sampled snapshot — i.e. there IS a
+  // gap to describe. endSnap always stays anchored to the real sampled
+  // data; the opening point never affects it.
+  const firstRealDate  = sampled[0]?.date ?? null
+  const openingApplies = !!openingPoint && (firstRealDate === null || openingPoint.date < firstRealDate)
+  const gapEndDate      = openingApplies && firstRealDate !== null ? firstRealDate : null
+  const startSnap = openingApplies
+    ? { date: openingPoint!.date, total_value_eur: openingPoint!.totalValueEur }
+    : (sampled[0] ?? null)
+  const endSnap = sampled.length > 0 ? sampled[sampled.length - 1] : startSnap
+  const hasSampled = startSnap !== null && endSnap !== null
   const delta      = startSnap && endSnap ? endSnap.total_value_eur - startSnap.total_value_eur : 0
   const headerPct  = startSnap && endSnap && startSnap.total_value_eur !== 0
     ? delta / startSnap.total_value_eur
@@ -587,6 +678,16 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
 
                 <Tooltip content={renderTooltip} />
 
+                {gapEndDate && openingPoint && (
+                  <ReferenceArea
+                    x1={openingPoint.date}
+                    x2={gapEndDate}
+                    fill="#f1f5f9"
+                    fillOpacity={0.6}
+                    label={{ value: 'No historical snapshots', position: 'insideTop', fontSize: 11, fill: '#94a3b8' }}
+                  />
+                )}
+
                 {STATIC_SERIES.map((s) =>
                   !visibleSeries.has(s.key) ? null : (
                     <Line
@@ -599,7 +700,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
                       strokeDasharray={s.strokeDasharray}
                       dot={false}
                       activeDot={{ r: 4 }}
-                      connectNulls
+                      connectNulls={!openingPoint}
                     />
                   ),
                 )}
@@ -615,7 +716,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
                       strokeWidth={1.5}
                       dot={false}
                       activeDot={{ r: 3 }}
-                      connectNulls
+                      connectNulls={!openingPoint}
                     />
                   ),
                 )}

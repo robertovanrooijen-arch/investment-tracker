@@ -966,6 +966,37 @@ function computeModifiedDietzReturnPercent(
   return safePercent(numerator, denominator)
 }
 
+// Builds the exact list of dated external cash flows for `year` — same
+// definition as the Contributions page (external cash moved to/from the
+// portfolio, not internal buy/sell reallocations). Shared by
+// computeYearPortfolioSummary (whole-year total + Modified Dietz weighting)
+// and computeMonthlyYtdPerformance (the same flows, bucketed by month) —
+// never two independently-derived cashflow lists for the same year.
+function buildYearCashFlows(
+  year: number,
+  capitalFlowEntries: CapitalFlowEntryForYear[],
+  transactions: Transaction[]
+): DatedCashFlow[] {
+  const flows: DatedCashFlow[] = []
+  const ledgerRows = capitalFlowEntries.filter((e) => e.year === year)
+  for (const e of ledgerRows) {
+    flows.push({
+      date: e.flow_date,
+      amountEur: e.direction === 'to_portfolio' ? e.amount_eur : -e.amount_eur,
+    })
+  }
+  for (const tx of transactions) {
+    if (!tx.is_contribution || !inYear(tx.date, year)) continue
+    const row = txToContribRow(tx as Parameters<typeof txToContribRow>[0])
+    if (!row) continue
+    flows.push({
+      date: tx.date,
+      amountEur: row.direction === 'to_portfolio' ? row.amount_eur : -row.amount_eur,
+    })
+  }
+  return flows
+}
+
 export function computeYearPortfolioSummary(
   year: number,
   assetRows: AssetYearRow[],
@@ -1018,23 +1049,7 @@ export function computeYearPortfolioSummary(
   // cash moved to/from the portfolio, not internal buy/sell reallocations.
   // Each flow keeps its real date, so the same list can weight the Modified
   // Dietz return below — no separate, potentially-inconsistent date lookup.
-  const yearCashFlows: DatedCashFlow[] = []
-  const ledgerRows = capitalFlowEntries.filter((e) => e.year === year)
-  for (const e of ledgerRows) {
-    yearCashFlows.push({
-      date: e.flow_date,
-      amountEur: e.direction === 'to_portfolio' ? e.amount_eur : -e.amount_eur,
-    })
-  }
-  for (const tx of transactions) {
-    if (!tx.is_contribution || !inYear(tx.date, year)) continue
-    const row = txToContribRow(tx as Parameters<typeof txToContribRow>[0])
-    if (!row) continue
-    yearCashFlows.push({
-      date: tx.date,
-      amountEur: row.direction === 'to_portfolio' ? row.amount_eur : -row.amount_eur,
-    })
-  }
+  const yearCashFlows = buildYearCashFlows(year, capitalFlowEntries, transactions)
   const netContributionsEur = yearCashFlows.reduce((s, f) => s + f.amountEur, 0)
   const grossContributionsInEur = yearCashFlows
     .filter((f) => f.amountEur > 0)
@@ -1135,6 +1150,165 @@ export function computeYearPortfolioSummary(
     grossContributionsInEur,
     grossContributionsOutEur,
   }
+}
+
+// ---------- Month-by-month YTD walk ----------
+
+export type MonthlyYtdRow = {
+  month: number // 1–12 — the calendar month this row is slotted into
+  label: string // 'Jan', 'Feb', … — that calendar month's short name
+  // The REAL period this row's gainLossEur/returnPercent were actually
+  // computed over — always real dates the Modified Dietz call itself used,
+  // never fabricated. Equal to [1st, last day] of `month` for an ordinary
+  // row; starts earlier when one or more preceding months had no snapshot
+  // (see spansMultipleMonths / periodLabel).
+  periodStartIso: string
+  periodEndIso: string
+  // Honest label for what's actually covered — "May" for an ordinary
+  // month, "Jan–May" when this row recovers a multi-month gap. Always
+  // derived from periodStartIso/periodEndIso; never a second, separately
+  // invented label.
+  periodLabel: string
+  // True when periodLabel differs from the plain month label — i.e. this
+  // row's numbers are NOT ordinary single-month performance, and the UI
+  // must present periodLabel instead of `label` wherever a value is shown.
+  spansMultipleMonths: boolean
+  startValueEur: number | null
+  endValueEur: number | null
+  isCurrentMonth: boolean
+  // That month's own net contribution — known even when the portfolio
+  // value for that month isn't (real transactions/capital_flow_entries
+  // still have real dates), so it's populated even on unavailable rows.
+  netContributionEur: number
+  gainLossEur: number | null
+  returnPercent: number | null
+  // Set when this row has no computable value at all — no snapshot exists
+  // inside this month, and none of the guesses below it are trustworthy.
+  unavailableReason: string | null
+}
+
+/**
+ * Month-by-month walk from the year's start value to today (or to
+ * year-end, for a past year) — the exact same cash flows and Modified
+ * Dietz formula as computeYearPortfolioSummary, just stopped at each month
+ * boundary instead of only at year-end.
+ *
+ * A month's end-of-month value only ever comes from a portfolio_snapshot
+ * actually dated inside that month, or today's live value for the current,
+ * still-open month — never an older snapshot reused past its month (this
+ * app has real gaps, e.g. months with no snapshot at all before the daily
+ * cron started), which would otherwise silently render as a misleading
+ * flat 0% instead of "unavailable".
+ */
+export function computeMonthlyYtdPerformance(
+  year: number,
+  startValueEur: number | null,
+  startValueDate: string | null,
+  snapshots: PortfolioSnapshotForYear[],
+  capitalFlowEntries: CapitalFlowEntryForYear[],
+  transactions: Transaction[],
+  liveTotalValueEur: number
+): MonthlyYtdRow[] {
+  const currentCalendarYear = new Date().getFullYear()
+  const currentCalendarMonth = new Date().getMonth() + 1
+
+  const lastMonthToShow =
+    year > currentCalendarYear ? 0 : year === currentCalendarYear ? currentCalendarMonth : 12
+  if (lastMonthToShow === 0) return []
+
+  const yearCashFlows = buildYearCashFlows(year, capitalFlowEntries, transactions)
+
+  const rows: MonthlyYtdRow[] = []
+  let lastGoodValue = startValueEur
+  let lastGoodDate = startValueDate ?? `${year}-01-01`
+  // Flows accumulated since the last row with a known value — usually just
+  // the current month's own flows, but grows to span every skipped month
+  // since the last known point, so a "recovery" row after a gap nets out
+  // ALL of the real contributions in that gap rather than miscounting them
+  // as investment growth.
+  let pendingFlows: DatedCashFlow[] = []
+  // The first calendar month genuinely covered by the NEXT row that
+  // actually resolves — only advances after a row is successfully
+  // computed (not on a skipped/unavailable one), so it always reflects
+  // the true start of whatever period a "recovery" row's numbers cover.
+  let periodStartMonth = 1
+
+  for (let m = 1; m <= lastMonthToShow; m++) {
+    const label = MONTH_LABELS[m - 1]
+    const isCurrentMonth = year === currentCalendarYear && m === currentCalendarMonth
+    const monthPrefix = `${year}-${String(m).padStart(2, '0')}`
+    const monthEndIso = isCurrentMonth
+      ? todayIso()
+      : `${monthPrefix}-${String(new Date(year, m, 0).getDate()).padStart(2, '0')}`
+
+    const monthFlows = yearCashFlows.filter((f) => f.date.slice(0, 7) === monthPrefix)
+    const netContributionEur = monthFlows.reduce((s, f) => s + f.amountEur, 0)
+
+    pendingFlows = pendingFlows.concat(monthFlows)
+
+    const endValueEur = isCurrentMonth
+      ? liveTotalValueEur
+      : snapshots
+          .filter((s) => s.date.slice(0, 7) === monthPrefix)
+          .sort((a, b) => (a.date < b.date ? 1 : -1))[0]?.total_value_eur ?? null
+
+    if (endValueEur === null || lastGoodValue === null) {
+      rows.push({
+        month: m,
+        label,
+        periodStartIso: lastGoodDate,
+        periodEndIso: monthEndIso,
+        periodLabel: label,
+        spansMultipleMonths: false,
+        startValueEur: null,
+        endValueEur: null,
+        isCurrentMonth,
+        netContributionEur,
+        gainLossEur: null,
+        returnPercent: null,
+        unavailableReason:
+          lastGoodValue === null
+            ? 'No start-of-year value available yet.'
+            : 'No portfolio snapshot for this month.',
+      })
+      continue // keep accumulating pendingFlows / periodStartMonth stays put
+    }
+
+    const gainLossEur = endValueEur - lastGoodValue - pendingFlows.reduce((s, f) => s + f.amountEur, 0)
+    const returnPercent = computeModifiedDietzReturnPercent(
+      lastGoodValue,
+      endValueEur,
+      pendingFlows,
+      lastGoodDate,
+      monthEndIso
+    )
+
+    const spansMultipleMonths = periodStartMonth < m
+    const periodLabel = spansMultipleMonths ? `${MONTH_LABELS[periodStartMonth - 1]}–${label}` : label
+
+    rows.push({
+      month: m,
+      label,
+      periodStartIso: lastGoodDate,
+      periodEndIso: monthEndIso,
+      periodLabel,
+      spansMultipleMonths,
+      startValueEur: lastGoodValue,
+      endValueEur,
+      isCurrentMonth,
+      netContributionEur,
+      gainLossEur,
+      returnPercent,
+      unavailableReason: null,
+    })
+
+    lastGoodValue = endValueEur
+    lastGoodDate = monthEndIso
+    pendingFlows = []
+    periodStartMonth = m + 1
+  }
+
+  return rows
 }
 
 // ---------- Portfolio bridge (waterfall) chart data ----------

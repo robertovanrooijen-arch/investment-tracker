@@ -11,6 +11,7 @@ export type IconName =
   | 'projection'
   | 'contributions'
   | 'calendar'
+  | 'ytd'
 
 const paths: Record<IconName, ReactNode> = {
   dashboard: (
@@ -74,6 +75,13 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M3 9h18" />
       <path d="M8 2v4" />
       <path d="M16 2v4" />
+    </>
+  ),
+  ytd: (
+    <>
+      <rect x="4" y="14" width="4" height="7" rx="1" />
+      <rect x="10" y="9" width="4" height="12" rx="1" />
+      <rect x="16" y="4" width="4" height="17" rx="1" />
     </>
   ),
 }
