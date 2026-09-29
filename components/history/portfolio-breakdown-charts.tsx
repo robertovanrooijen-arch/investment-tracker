@@ -1,6 +1,8 @@
 'use client'
 
 import { useCallback } from 'react'
+import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import {
   PieChart,
   Pie,
@@ -11,31 +13,8 @@ import {
 import { money } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
 import type { AllocationSlice, PortfolioMetrics } from '@/lib/domain/calculations'
-
-// ── Color maps (hex for Recharts) ──────────────────────────────────────────
-
-const CATEGORY_HEX: Record<string, string> = {
-  stock:          '#0ea5e9',  // sky-500
-  ETF:            '#6366f1',  // indigo-500
-  crypto:         '#f59e0b',  // amber-500
-  cash:           '#10b981',  // emerald-500
-  'real estate':  '#ef4444',  // rose-500
-  custom:         '#6b7280',  // slate-500
-  commodity:      '#eab308',  // yellow-500
-}
-
-const PLATFORM_HEX: Record<string, string> = {
-  DEGIRO:           '#2563eb',  // blue-600
-  'Trade Republic': '#1e293b',  // slate-800
-  'Gold Republic':  '#d97706',  // amber-600
-  Bitvavo:          '#6366f1',  // indigo-500
-  Binance:          '#eab308',  // yellow-500
-  ING:              '#f97316',  // orange-500
-  'Real Estate':    '#ef4444',  // rose-500
-  Custom:           '#6b7280',  // slate-500
-}
-
-const FALLBACK_HEX = '#9ca3af'
+import { CATEGORY_HEX, PLATFORM_HEX, FALLBACK_HEX } from '@/lib/colors'
+import { categorySlug } from '@/lib/domain/allocation'
 
 function colorFor(map: Record<string, string>, key: string): string {
   return map[key] ?? FALLBACK_HEX
@@ -75,12 +54,20 @@ function AllocationDonut({
   title,
   slices,
   colorMap,
+  linkForKey,
+  detailsHref,
 }: {
   title: string
   slices: AllocationSlice[]
   colorMap: Record<string, string>
+  /** When provided, segments + legend items become links (dashboard "By category" → allocation detail page). */
+  linkForKey?: (key: string) => string
+  /** When provided, shows a "View details →" link next to the title. */
+  detailsHref?: string
 }) {
+  const router = useRouter()
   const total = slices.reduce((s, x) => s + x.value, 0)
+  const clickable = !!linkForKey
 
   const renderTooltip = useCallback(
     (props: object) =>
@@ -99,7 +86,17 @@ function AllocationDonut({
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
-      <h2 className="text-base font-semibold text-slate-900 mb-1">{title}</h2>
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="text-base font-semibold text-slate-900">{title}</h2>
+        {detailsHref && (
+          <Link
+            href={detailsHref}
+            className="text-xs font-medium text-slate-500 hover:text-slate-900"
+          >
+            View details →
+          </Link>
+        )}
+      </div>
 
       <div className="h-44">
         <ResponsiveContainer width="100%" height="100%">
@@ -112,9 +109,21 @@ function AllocationDonut({
               outerRadius={74}
               paddingAngle={2}
               dataKey="value"
+              onClick={
+                linkForKey
+                  ? (entry: { payload?: { key: string } }) => {
+                      const key = entry?.payload?.key
+                      if (key) router.push(linkForKey(key))
+                    }
+                  : undefined
+              }
             >
               {slices.map((s) => (
-                <Cell key={s.key} fill={colorFor(colorMap, s.key)} />
+                <Cell
+                  key={s.key}
+                  fill={colorFor(colorMap, s.key)}
+                  className={clickable ? 'cursor-pointer transition-opacity hover:opacity-80' : undefined}
+                />
               ))}
             </Pie>
             <Tooltip content={renderTooltip} />
@@ -123,21 +132,38 @@ function AllocationDonut({
       </div>
 
       <ul className="mt-2 space-y-2">
-        {slices.map((s) => (
-          <li key={s.key} className="flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                style={{ backgroundColor: colorFor(colorMap, s.key) }}
-              />
-              <span className="truncate text-slate-700">{s.key}</span>
+        {slices.map((s) => {
+          const row = (
+            <div className="flex items-center justify-between text-sm rounded-lg -mx-1.5 px-1.5 py-0.5 transition-colors group-hover:bg-slate-50">
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: colorFor(colorMap, s.key) }}
+                />
+                <span className="truncate text-slate-700">{s.key}</span>
+              </div>
+              <div className="flex items-center gap-3 shrink-0">
+                <span className="text-slate-500 tabular-nums">{pct(s.pct)}</span>
+                <span className="font-medium text-slate-900 tabular-nums">{money(s.value)}</span>
+              </div>
             </div>
-            <div className="flex items-center gap-3 shrink-0">
-              <span className="text-slate-500 tabular-nums">{pct(s.pct)}</span>
-              <span className="font-medium text-slate-900 tabular-nums">{money(s.value)}</span>
-            </div>
-          </li>
-        ))}
+          )
+
+          return (
+            <li key={s.key} className="group">
+              {linkForKey ? (
+                <Link
+                  href={linkForKey(s.key)}
+                  className="block rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                >
+                  {row}
+                </Link>
+              ) : (
+                row
+              )}
+            </li>
+          )
+        })}
       </ul>
     </div>
   )
@@ -236,7 +262,13 @@ export function PortfolioBreakdownCharts({ byCategory, byPlatform, liveMetrics }
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <AllocationDonut title="By category" slices={byCategory} colorMap={CATEGORY_HEX} />
+        <AllocationDonut
+          title="By category"
+          slices={byCategory}
+          colorMap={CATEGORY_HEX}
+          linkForKey={(key) => `/portfolio/allocation?category=${categorySlug(key)}`}
+          detailsHref="/portfolio/allocation"
+        />
         <AllocationDonut title="By platform" slices={byPlatform} colorMap={PLATFORM_HEX} />
       </div>
       <ProfitLossBreakdown metrics={liveMetrics} />
