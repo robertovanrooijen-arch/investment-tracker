@@ -1,22 +1,10 @@
 'use client'
 
-import { createContext, useContext, useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import type { ReactNode } from 'react'
+import { AccountPrivacyContext } from './privacy-context'
 
 const STORAGE_KEY = 'investie:hide-account-details'
-
-type AccountPrivacyContextValue = {
-  /** True once localStorage has been read on the client — see Provider for why this matters. */
-  ready: boolean
-  hidden: boolean
-  toggle: () => void
-}
-
-const AccountPrivacyContext = createContext<AccountPrivacyContextValue>({
-  ready: false,
-  hidden: true,
-  toggle: () => {},
-})
 
 export function AccountPrivacyProvider({ children }: { children: ReactNode }) {
   // Starts "hidden" (the safe default) until we've actually read the stored
@@ -56,8 +44,4 @@ export function AccountPrivacyProvider({ children }: { children: ReactNode }) {
       {children}
     </AccountPrivacyContext.Provider>
   )
-}
-
-export function useAccountPrivacy(): AccountPrivacyContextValue {
-  return useContext(AccountPrivacyContext)
 }

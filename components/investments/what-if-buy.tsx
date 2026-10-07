@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { money } from '@/lib/format'
+import { PrivacyGate } from '@/components/ui/privacy-value'
 
 type Props = {
   quantityHeld: number
@@ -105,46 +106,54 @@ export function WhatIfBuy({
       </div>
 
       <div className="mt-6 grid gap-3 md:grid-cols-3">
-        <Stat
-          label="Current avg buy price"
-          value={
-            currentAverageBuyPrice != null
-              ? money(currentAverageBuyPrice, currency)
-              : '—'
-          }
-        />
-        <Stat
-          label="New avg buy price"
-          value={
-            result?.newAverageBuyPrice != null
-              ? money(result.newAverageBuyPrice, currency)
-              : '—'
-          }
-          hint={
-            result?.delta != null
-              ? `${result.delta >= 0 ? '+' : ''}${money(result.delta, currency)} per unit`
-              : undefined
-          }
-          highlight={!!result}
-        />
-        <Stat
-          label="New quantity"
-          value={result ? formatNumber(result.newQuantity) : formatNumber(quantityHeld)}
-          hint={result ? `was ${formatNumber(quantityHeld)}` : undefined}
-        />
+        <PrivacyGate fallback={<Stat label="Current avg buy price" value="—" />}>
+          <Stat
+            label="Current avg buy price"
+            value={
+              currentAverageBuyPrice != null
+                ? money(currentAverageBuyPrice, currency)
+                : '—'
+            }
+          />
+        </PrivacyGate>
+        <PrivacyGate fallback={<Stat label="New avg buy price" value="—" />}>
+          <Stat
+            label="New avg buy price"
+            value={
+              result?.newAverageBuyPrice != null
+                ? money(result.newAverageBuyPrice, currency)
+                : '—'
+            }
+            hint={
+              result?.delta != null
+                ? `${result.delta >= 0 ? '+' : ''}${money(result.delta, currency)} per unit`
+                : undefined
+            }
+            highlight={!!result}
+          />
+        </PrivacyGate>
+        <PrivacyGate fallback={<Stat label="New quantity" value="—" />}>
+          <Stat
+            label="New quantity"
+            value={result ? formatNumber(result.newQuantity) : formatNumber(quantityHeld)}
+            hint={result ? `was ${formatNumber(quantityHeld)}` : undefined}
+          />
+        </PrivacyGate>
       </div>
 
       {result && (
-        <p className="mt-4 text-xs text-slate-500">
-          New cost basis:{' '}
-          <span className="font-medium text-slate-700">
-            {money(result.newCostBasis, currency)}
-          </span>{' '}
-          · this buy adds{' '}
-          <span className="font-medium text-slate-700">
-            {money(result.buyCost, currency)}
-          </span>
-        </p>
+        <PrivacyGate>
+          <p className="mt-4 text-xs text-slate-500">
+            New cost basis:{' '}
+            <span className="font-medium text-slate-700">
+              {money(result.newCostBasis, currency)}
+            </span>{' '}
+            · this buy adds{' '}
+            <span className="font-medium text-slate-700">
+              {money(result.buyCost, currency)}
+            </span>
+          </p>
+        </PrivacyGate>
       )}
     </section>
   )

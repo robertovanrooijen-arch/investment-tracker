@@ -13,6 +13,7 @@ import {
 } from 'recharts'
 import { money } from '@/lib/format'
 import { getChartTicks, getTickFormatter } from '@/lib/domain/chart-ticks'
+import { useAccountPrivacy } from '@/lib/privacy/privacy-context'
 import type { ChartPoint } from '@/lib/domain/chart-timeline'
 
 // ── View mode ──────────────────────────────────────────────────────────────
@@ -145,6 +146,11 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
   const [visible,  setVisible]  = useState<Record<LineKey, boolean>>({
     value: true, costBasis: true, unrealizedPL: false,
   })
+  const { hidden: privacyHidden } = useAccountPrivacy()
+  // Same reasoning as PortfolioHistoryChart/BreakdownChart: lock to the
+  // %-change view while hidden, so the plotted shape (not just its labels)
+  // never encodes an absolute euro figure.
+  const effectiveViewMode: ViewMode = privacyHidden ? 'change_pct' : viewMode
 
   const filtered = useMemo(
     () => filterByPreset(chartPoints, preset),
@@ -156,7 +162,7 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
   // divide by zero or produce NaN. Switching preset changes `filtered[0]`
   // and thus resets the baseline automatically.
   const displayData = useMemo((): DisplayPoint[] => {
-    if (viewMode === 'absolute' || filtered.length === 0) {
+    if (effectiveViewMode === 'absolute' || filtered.length === 0) {
       return filtered.map((p) => ({
         date: p.date,
         value_eur: p.value_eur,
@@ -174,7 +180,7 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
 
     function transform(curr: number | null, firstVal: number): number | null {
       if (curr === null) return null
-      if (viewMode === 'change_eur') return curr - firstVal
+      if (effectiveViewMode === 'change_eur') return curr - firstVal
       // change_pct — safe divide
       return firstVal !== 0 ? ((curr / firstVal) - 1) * 100 : 0
     }
@@ -187,13 +193,13 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
       // Using the P/L value's own % change would be misleading when P/L is
       // near zero, negative, or crosses sign.
       unrealized_profit_eur:
-        viewMode === 'change_pct'
+        effectiveViewMode === 'change_pct'
           ? (row.value_eur !== null && row.cost_basis_eur !== 0
               ? ((row.value_eur - row.cost_basis_eur) / row.cost_basis_eur) * 100
               : null)
           : transform(row.unrealized_profit_eur, base.unrealized_profit_eur),
     }))
-  }, [filtered, viewMode])
+  }, [filtered, effectiveViewMode])
 
   const chartDates = useMemo(() => displayData.map((d) => d.date), [displayData])
   const chartTicks = useMemo(() => getChartTicks(chartDates), [chartDates])
@@ -212,7 +218,7 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
           <p className="mt-3 text-sm text-slate-700">
             Latest value:{' '}
             <span className="font-semibold">
-              {money(chartPoints[0].value_eur, 'EUR')}
+              {privacyHidden ? '—' : money(chartPoints[0].value_eur, 'EUR')}
             </span>
           </p>
         )}
@@ -240,7 +246,7 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
   // Show zero reference line in Δ modes always; in € mode when unrealized P/L
   // is enabled or when the data itself dips to/below 0.
   const showZeroLine =
-    viewMode !== 'absolute'
+    effectiveViewMode !== 'absolute'
     || visible.unrealizedPL
     || displayData.some(
         (p) =>
@@ -248,7 +254,7 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
           (visible.costBasis && p.cost_basis_eur  !== null && p.cost_basis_eur   <= 0),
       )
   const zeroLineLabel =
-    viewMode === 'change_pct' ? '0%' : viewMode === 'change_eur' ? '0' : 'Break-even'
+    effectiveViewMode === 'change_pct' ? '0%' : effectiveViewMode === 'change_eur' ? '0' : 'Break-even'
 
   function toggleLine(k: LineKey) {
     setVisible((v) => ({ ...v, [k]: !v[k] }))
@@ -267,13 +273,21 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
               Value over time
             </p>
             <p className="mt-1 text-3xl font-semibold tabular-nums text-slate-900">
-              {end ? money(end.value_eur, 'EUR') : '—'}
+              {privacyHidden
+                ? pct !== null
+                  ? `${delta >= 0 ? '+' : ''}${(pct * 100).toFixed(2)}%`
+                  : '—'
+                : end
+                  ? money(end.value_eur, 'EUR')
+                  : '—'}
             </p>
             {hasFiltered && start && end ? (
               start.date === end.date ? (
                 <p className="mt-2 text-sm text-slate-500">
                   Single snapshot in this timeframe
                 </p>
+              ) : privacyHidden ? (
+                <p className="mt-2 text-sm text-slate-600">Since {formatLongDate(start.date)}</p>
               ) : (
                 <p className="mt-2 text-sm text-slate-600">
                   From{' '}
@@ -328,15 +342,19 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
 
         <div className="mb-5 flex flex-wrap items-center gap-3">
 
-          {/* View mode toggle */}
-          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 shrink-0">
+          {/* View mode toggle — locked to Δ% while account details are hidden */}
+          <div
+            className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 shrink-0"
+            title={privacyHidden ? 'Locked to % change while account details are hidden' : undefined}
+          >
             {VIEW_MODES.map((m) => (
               <button
                 key={m.key}
                 type="button"
                 onClick={() => setViewMode(m.key)}
-                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-                  viewMode === m.key
+                disabled={privacyHidden}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  effectiveViewMode === m.key
                     ? 'bg-white text-slate-900 shadow-sm'
                     : 'text-slate-500 hover:text-slate-700'
                 }`}
@@ -354,7 +372,7 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
             {LINE_ORDER.map((k) => {
               const meta   = LINE_META[k]
               const active = visible[k]
-              const label  = k === 'unrealizedPL' ? unrealizedLabel(viewMode) : meta.label
+              const label  = k === 'unrealizedPL' ? unrealizedLabel(effectiveViewMode) : meta.label
               return (
                 <button
                   key={k}
@@ -400,20 +418,20 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
                   domain={[
                     (dataMin: number) => {
                       const n = Number.isFinite(dataMin) ? dataMin : 0
-                      return viewMode === 'absolute'
+                      return effectiveViewMode === 'absolute'
                         ? Math.floor(n * 0.98)
                         : Math.floor(n * 1.05)  // give a little room below 0 in delta modes
                     },
                     (dataMax: number) => {
                       const n = Number.isFinite(dataMax) ? dataMax : 0
-                      return viewMode === 'absolute'
+                      return effectiveViewMode === 'absolute'
                         ? Math.ceil(n * 1.02)
                         : Math.ceil(n * 1.05)
                     },
                   ]}
                   tickFormatter={(value) => {
                     const n = typeof value === 'number' ? value : Number(value)
-                    return fmtYAxis(n, viewMode)
+                    return fmtYAxis(n, effectiveViewMode)
                   }}
                   tick={{ fontSize: 12, fill: '#64748b' }}
                   stroke="#cbd5e1"
@@ -440,7 +458,7 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
                     const n = value === null || value === undefined
                       ? null
                       : typeof value === 'number' ? value : Number(value)
-                    return [fmtValue(n, viewMode), name]
+                    return [fmtValue(n, effectiveViewMode), name]
                   }}
                   labelFormatter={(label) =>
                     typeof label === 'string'
@@ -456,7 +474,7 @@ export function InvestmentDetailChart({ chartPoints }: Props) {
 
                 {visibleLineKeys.map((k) => {
                   const meta = LINE_META[k]
-                  const lineName = k === 'unrealizedPL' ? unrealizedLabel(viewMode) : meta.label
+                  const lineName = k === 'unrealizedPL' ? unrealizedLabel(effectiveViewMode) : meta.label
                   return (
                     <Line
                       key={k}

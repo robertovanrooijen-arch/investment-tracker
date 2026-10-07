@@ -7,6 +7,7 @@ import { AssetClassPerformanceTable } from '@/components/profit-loss/asset-class
 import type { ClassPerformanceRow } from '@/components/profit-loss/asset-class-performance-table'
 import { YtdBridgeBar } from '@/components/profit-loss/ytd-bridge-bar'
 import { computePortfolioMetrics, computePerformanceByCategory, pct } from '@/lib/domain/calculations'
+import type { PortfolioMetrics } from '@/lib/domain/calculations'
 import { categoryLabel } from '@/lib/domain/allocation'
 import { loadFxRates } from '@/lib/domain/fx'
 import {
@@ -27,6 +28,16 @@ function fmtPercent(n: number | null, digits = 2): string {
 function tone(n: number | null): 'positive' | 'negative' | 'neutral' {
   if (n === null || n === 0) return 'neutral'
   return n > 0 ? 'positive' : 'negative'
+}
+
+// Privacy fallback for the Realized/Unrealized cards: each one's share of
+// combined |realized| + |unrealized| — a share of total P/L, not a return —
+// matching exactly what the Dashboard's Profit/Loss breakdown card shows,
+// so the two pages never disagree on this number either.
+function shareOfTotalPLText(n: number, metrics: PortfolioMetrics): string {
+  const absTotal = Math.abs(metrics.totalRealized) + Math.abs(metrics.totalUnrealized)
+  if (absTotal === 0) return '—'
+  return `${((Math.abs(n) / absTotal) * 100).toFixed(1)}% of total P/L`
 }
 
 export default async function ProfitLossDetailsPage() {
@@ -180,12 +191,24 @@ export default async function ProfitLossDetailsPage() {
         />
         <StatCard
           label="Realized"
-          value={<PrivacyMoney value={liveMetrics.totalRealized} signed fallbackText="—" />}
+          value={
+            <PrivacyMoney
+              value={liveMetrics.totalRealized}
+              signed
+              fallbackText={shareOfTotalPLText(liveMetrics.totalRealized, liveMetrics)}
+            />
+          }
           tone={tone(liveMetrics.totalRealized)}
         />
         <StatCard
           label="Unrealized"
-          value={<PrivacyMoney value={liveMetrics.totalUnrealized} signed fallbackText="—" />}
+          value={
+            <PrivacyMoney
+              value={liveMetrics.totalUnrealized}
+              signed
+              fallbackText={shareOfTotalPLText(liveMetrics.totalUnrealized, liveMetrics)}
+            />
+          }
           tone={tone(liveMetrics.totalUnrealized)}
         />
       </div>

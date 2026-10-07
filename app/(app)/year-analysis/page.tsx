@@ -6,6 +6,7 @@ import { money } from '@/lib/format'
 import { loadFxRates } from '@/lib/domain/fx'
 import { computePortfolioMetrics } from '@/lib/domain/calculations'
 import { categoryLabel } from '@/lib/domain/allocation'
+import { PrivacyGate, PrivacyMoney } from '@/components/ui/privacy-value'
 import {
   getAvailableYears,
   computeAssetYearRows,
@@ -103,7 +104,9 @@ function AuditCheckCard({ check }: { check: AuditCheck }) {
                 {row.note && <span className="block text-xs text-slate-400">{row.note}</span>}
               </td>
               <td className="py-1.5 text-right tabular-nums font-medium text-slate-900 whitespace-nowrap">
-                {row.value !== null ? money(row.value, 'EUR') : '—'}
+                <PrivacyGate fallback="—">
+                  <>{row.value !== null ? money(row.value, 'EUR') : '—'}</>
+                </PrivacyGate>
               </td>
             </tr>
           ))}
@@ -118,7 +121,9 @@ function AuditCheckCard({ check }: { check: AuditCheck }) {
                     : 'text-rose-600'
               }`}
             >
-              {check.differenceEur !== null ? signedMoney(check.differenceEur) : '—'}
+              <PrivacyGate fallback="—">
+                <>{check.differenceEur !== null ? signedMoney(check.differenceEur) : '—'}</>
+              </PrivacyGate>
             </td>
           </tr>
         </tbody>
@@ -274,29 +279,41 @@ export default async function YearAnalysisPage({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           label="Start portfolio value"
-          value={summary.startValueEur !== null ? money(summary.startValueEur, 'EUR') : '—'}
+          value={<PrivacyMoney value={summary.startValueEur} fallbackText="—" />}
           hint={summary.startValueDate ? `As of ${summary.startValueDate}` : 'No snapshot available'}
         />
         <StatCard
           label={isCurrentYear ? 'Current portfolio value' : 'End portfolio value'}
-          value={money(summary.endValueEur, 'EUR')}
+          value={<PrivacyMoney value={summary.endValueEur} fallbackText="—" />}
           hint={summary.endValueIsLive ? `Live value, as of ${summary.endValueDate}` : `As of ${summary.endValueDate}`}
         />
         <StatCard
           label="Net contributions"
-          value={signedMoney(summary.netContributionsEur)}
+          value={
+            <PrivacyMoney
+              value={summary.netContributionsEur}
+              signed
+              fallbackText={summary.netContributionsPercent !== null ? `${pctCell(summary.netContributionsPercent)} of start` : '—'}
+            />
+          }
           hint={
-            summary.netContributionsPercent !== null
-              ? `${pctCell(summary.netContributionsPercent)} of start value · external cash to/from the portfolio`
-              : 'External cash moved to/from the portfolio this year'
+            summary.netContributionsPercent !== null ? (
+              <PrivacyGate fallback="External cash to/from the portfolio">
+                <>{pctCell(summary.netContributionsPercent)} of start value · external cash to/from the portfolio</>
+              </PrivacyGate>
+            ) : (
+              'External cash moved to/from the portfolio this year'
+            )
           }
         />
         <StatCard
           label="Growth after contributions"
           value={
-            summary.growthExcludingContributionsEur !== null
-              ? signedMoney(summary.growthExcludingContributionsEur)
-              : '—'
+            <PrivacyMoney
+              value={summary.growthExcludingContributionsEur}
+              signed
+              fallbackText={pctCell(summary.modifiedDietzReturnPercent)}
+            />
           }
           hint="Selected-year value change after removing external cashflows."
           tone={
@@ -446,34 +463,46 @@ export default async function YearAnalysisPage({
                         )}
                       </td>
                       <td className="px-4 py-3.5 text-right tabular-nums whitespace-nowrap text-slate-900">
-                        {money(c.currentValueEur, 'EUR')}
+                        <PrivacyGate fallback={`${c.pctOfPortfolio.toFixed(1)}%`}>
+                          <>{money(c.currentValueEur, 'EUR')}</>
+                        </PrivacyGate>
                       </td>
                       <td className="px-4 py-3.5 text-right tabular-nums whitespace-nowrap text-slate-500">
                         {c.pctOfPortfolio.toFixed(1)}%
                       </td>
                       <td className="px-4 py-3.5 text-right tabular-nums whitespace-nowrap">
-                        {c.amountBoughtInYearEur > 0 ? money(c.amountBoughtInYearEur, 'EUR') : '—'}
+                        <PrivacyGate fallback="—">
+                          <>{c.amountBoughtInYearEur > 0 ? money(c.amountBoughtInYearEur, 'EUR') : '—'}</>
+                        </PrivacyGate>
                       </td>
                       <td className="px-4 py-3.5 text-right tabular-nums whitespace-nowrap">
-                        {c.amountSoldInYearEur > 0 ? money(c.amountSoldInYearEur, 'EUR') : '—'}
+                        <PrivacyGate fallback="—">
+                          <>{c.amountSoldInYearEur > 0 ? money(c.amountSoldInYearEur, 'EUR') : '—'}</>
+                        </PrivacyGate>
                       </td>
                       <td className={`px-4 py-3.5 text-right tabular-nums whitespace-nowrap font-medium ${plClass(c.realizedPLInYearEur)}`}>
-                        {plCell(c.realizedPLInYearEur)}
+                        <PrivacyGate fallback="—"><>{plCell(c.realizedPLInYearEur)}</></PrivacyGate>
                       </td>
                       <td className={`px-4 py-3.5 text-right tabular-nums whitespace-nowrap font-medium ${plClass(c.currentUnrealizedPLEur)}`}>
-                        {plCell(c.currentUnrealizedPLEur)}
+                        <PrivacyGate fallback="—"><>{plCell(c.currentUnrealizedPLEur)}</></PrivacyGate>
                       </td>
                       <td className={`px-4 py-3.5 text-right tabular-nums whitespace-nowrap font-semibold ${plClass(c.totalPLEur)}`}>
-                        {plCell(c.totalPLEur)}
+                        <PrivacyGate fallback={pctCell(c.totalPLPercent)}>
+                          <>{plCell(c.totalPLEur)}</>
+                        </PrivacyGate>
                       </td>
                       <td className={`px-4 py-3.5 text-right tabular-nums whitespace-nowrap font-medium ${plClass(c.totalPLPercent)}`}>
                         {pctCell(c.totalPLPercent)}
                       </td>
                       <td className="px-4 py-3.5 text-right tabular-nums whitespace-nowrap text-slate-500">
-                        {c.feesPaidInYearEur > 0 ? money(c.feesPaidInYearEur, 'EUR') : '—'}
+                        <PrivacyGate fallback="—">
+                          <>{c.feesPaidInYearEur > 0 ? money(c.feesPaidInYearEur, 'EUR') : '—'}</>
+                        </PrivacyGate>
                       </td>
                       <td className="px-4 py-3.5 text-right tabular-nums whitespace-nowrap text-slate-500">
-                        {c.dividendsInterestInYearEur > 0 ? money(c.dividendsInterestInYearEur, 'EUR') : '—'}
+                        <PrivacyGate fallback="—">
+                          <>{c.dividendsInterestInYearEur > 0 ? money(c.dividendsInterestInYearEur, 'EUR') : '—'}</>
+                        </PrivacyGate>
                       </td>
                     </tr>
                   ))}
@@ -529,16 +558,20 @@ export default async function YearAnalysisPage({
                         <div className="font-medium text-slate-900">{row.name}</div>
                         <div className="text-xs text-slate-500">
                           {row.ticker ? `${row.ticker} · ` : ''}
-                          {row.currentQuantity !== null
-                            ? `${row.currentQuantity} held${row.status === 'closed' ? ' (closed)' : ''}`
-                            : row.isCashLike
-                              ? 'Cash balance'
-                              : null}
+                          {row.currentQuantity !== null ? (
+                            <PrivacyGate fallback={row.status === 'closed' ? 'closed' : undefined}>
+                              <>{row.currentQuantity} held{row.status === 'closed' ? ' (closed)' : ''}</>
+                            </PrivacyGate>
+                          ) : row.isCashLike ? (
+                            'Cash balance'
+                          ) : null}
                         </div>
                         {row.averageBuyPriceNative !== null && (
-                          <div className="text-xs text-slate-400">
-                            Avg buy: {money(row.averageBuyPriceNative, row.currency)}
-                          </div>
+                          <PrivacyGate>
+                            <div className="text-xs text-slate-400">
+                              Avg buy: {money(row.averageBuyPriceNative, row.currency)}
+                            </div>
+                          </PrivacyGate>
                         )}
                       </td>
                       <td className="px-4 py-3.5 whitespace-nowrap text-slate-700">{row.platform}</td>
@@ -551,25 +584,33 @@ export default async function YearAnalysisPage({
                         {row.portfolioWeightPct !== null ? `${row.portfolioWeightPct.toFixed(1)}%` : '—'}
                       </td>
                       <td className="px-4 py-3.5 text-right tabular-nums whitespace-nowrap">
-                        {row.amountBoughtInYearEur > 0 ? money(row.amountBoughtInYearEur, 'EUR') : '—'}
+                        <PrivacyGate fallback="—">
+                          <>{row.amountBoughtInYearEur > 0 ? money(row.amountBoughtInYearEur, 'EUR') : '—'}</>
+                        </PrivacyGate>
                       </td>
                       <td className="px-4 py-3.5 text-right tabular-nums whitespace-nowrap">
-                        {row.amountSoldInYearEur > 0 ? money(row.amountSoldInYearEur, 'EUR') : '—'}
+                        <PrivacyGate fallback="—">
+                          <>{row.amountSoldInYearEur > 0 ? money(row.amountSoldInYearEur, 'EUR') : '—'}</>
+                        </PrivacyGate>
                       </td>
                       <td className={`px-4 py-3.5 text-right tabular-nums whitespace-nowrap font-medium ${plClass(row.realizedPLInYearEur)}`}>
-                        {plCell(row.realizedPLInYearEur)}
+                        <PrivacyGate fallback="—"><>{plCell(row.realizedPLInYearEur)}</></PrivacyGate>
                       </td>
                       <td className={`px-4 py-3.5 text-right tabular-nums whitespace-nowrap font-medium ${plClass(row.currentUnrealizedPLEur)}`}>
-                        {plCell(row.currentUnrealizedPLEur)}
+                        <PrivacyGate fallback="—"><>{plCell(row.currentUnrealizedPLEur)}</></PrivacyGate>
                       </td>
                       <td className={`px-4 py-3.5 text-right tabular-nums whitespace-nowrap font-semibold ${plClass(row.totalPLEur)}`}>
-                        {plCell(row.totalPLEur)}
+                        <PrivacyGate fallback={pctCell(row.totalPLPercent)}>
+                          <>{plCell(row.totalPLEur)}</>
+                        </PrivacyGate>
                       </td>
                       <td className={`px-4 py-3.5 text-right tabular-nums whitespace-nowrap font-medium ${plClass(row.totalPLPercent)}`}>
                         {pctCell(row.totalPLPercent)}
                       </td>
                       <td className="px-4 py-3.5 text-right tabular-nums whitespace-nowrap text-slate-900">
-                        {money(row.currentValueEur, 'EUR')}
+                        <PrivacyGate fallback={row.portfolioWeightPct !== null ? `${row.portfolioWeightPct.toFixed(1)}%` : '—'}>
+                          <>{money(row.currentValueEur, 'EUR')}</>
+                        </PrivacyGate>
                       </td>
                       <td className="px-4 py-3.5 whitespace-nowrap">
                         <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_CLASS[row.status]}`}>

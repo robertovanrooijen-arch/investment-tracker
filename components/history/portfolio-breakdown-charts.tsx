@@ -188,11 +188,23 @@ function barColor(n: number): string {
 
 function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
   const { totalRealized, totalUnrealized, totalProfit } = metrics
+  const hasAnyPL = totalRealized !== 0 || totalUnrealized !== 0
   // Avoid divide-by-zero; if both are 0 show zero bars
   const absTotal = Math.abs(totalRealized) + Math.abs(totalUnrealized) || 1
 
   function barWidth(n: number): string {
     return `${Math.min((Math.abs(n) / absTotal) * 100, 100)}%`
+  }
+
+  // Privacy mode drops the € split but keeps something genuinely useful:
+  // each component's share of combined |realized| + |unrealized| — the
+  // exact same ratio the bar width below already uses, so the number next
+  // to a bar always matches how full that bar looks. This is a SHARE of
+  // total P/L, not a return — labelled as such, never conflated with
+  // totalProfitPct (that's investment return on cost basis, a different
+  // question answered by the "Total" row below).
+  function shareOfTotalPLPct(n: number): number | null {
+    return hasAnyPL ? (Math.abs(n) / absTotal) * 100 : null
   }
 
   const profitTone = totalProfit > 0 ? 'text-emerald-700' : totalProfit < 0 ? 'text-rose-700' : 'text-slate-900'
@@ -214,7 +226,15 @@ function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
           <div className="flex items-center justify-between text-sm mb-1.5">
             <span className="text-slate-600">Unrealized</span>
             <span className={`font-medium tabular-nums ${tone(totalUnrealized)}`}>
-              <PrivacyMoney value={totalUnrealized} signed fallbackText="—" />
+              <PrivacyMoney
+                value={totalUnrealized}
+                signed
+                fallbackText={
+                  shareOfTotalPLPct(totalUnrealized) !== null
+                    ? `${shareOfTotalPLPct(totalUnrealized)!.toFixed(1)}% of total P/L`
+                    : '—'
+                }
+              />
             </span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
@@ -230,7 +250,15 @@ function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
           <div className="flex items-center justify-between text-sm mb-1.5">
             <span className="text-slate-600">Realized</span>
             <span className={`font-medium tabular-nums ${tone(totalRealized)}`}>
-              <PrivacyMoney value={totalRealized} signed fallbackText="—" />
+              <PrivacyMoney
+                value={totalRealized}
+                signed
+                fallbackText={
+                  shareOfTotalPLPct(totalRealized) !== null
+                    ? `${shareOfTotalPLPct(totalRealized)!.toFixed(1)}% of total P/L`
+                    : '—'
+                }
+              />
             </span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">

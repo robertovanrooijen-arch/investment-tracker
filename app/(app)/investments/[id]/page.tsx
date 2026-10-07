@@ -411,7 +411,9 @@ export default async function InvestmentDetailPage({
                         </Badge>
                       </td>
                       <td className="px-6 py-4 text-right text-sm text-slate-700 tabular-nums">
-                        {tx.quantity !== null ? tx.quantity : '—'}
+                        <PrivacyGate fallback="—">
+                          <>{tx.quantity !== null ? tx.quantity : '—'}</>
+                        </PrivacyGate>
                       </td>
                       <td className="px-6 py-4 text-right text-sm text-slate-700 tabular-nums">
                         {tx.price_per_unit !== null
@@ -419,10 +421,14 @@ export default async function InvestmentDetailPage({
                           : '—'}
                       </td>
                       <td className="px-6 py-4 text-right text-sm text-slate-900 tabular-nums">
-                        {money(amountNative, priceCcy)}
+                        <PrivacyGate fallback="—">
+                          <>{money(amountNative, priceCcy)}</>
+                        </PrivacyGate>
                       </td>
                       <td className="px-6 py-4 text-right text-sm text-slate-500 tabular-nums">
-                        {tx.fee > 0 ? money(tx.fee, feeCcy) : '—'}
+                        <PrivacyGate fallback="—">
+                          <>{tx.fee > 0 ? money(tx.fee, feeCcy) : '—'}</>
+                        </PrivacyGate>
                       </td>
                     </ClickableTr>
                   )
@@ -451,16 +457,30 @@ export default async function InvestmentDetailPage({
                           </div>
                         </div>
                         <div className="text-right">
-                          <div className="text-sm text-slate-900 tabular-nums">
-                            {money(amountNative, priceCcy)}
-                          </div>
-                          {tx.quantity !== null &&
-                            tx.price_per_unit !== null && (
-                              <div className="text-xs text-slate-500 tabular-nums">
-                                {tx.quantity} ×{' '}
-                                {money(tx.price_per_unit, priceCcy)}
+                          <PrivacyGate
+                            fallback={
+                              tx.price_per_unit !== null ? (
+                                <div className="text-sm text-slate-500">
+                                  × {money(tx.price_per_unit, priceCcy)}
+                                </div>
+                              ) : (
+                                <div className="text-sm text-slate-900">—</div>
+                              )
+                            }
+                          >
+                            <>
+                              <div className="text-sm text-slate-900 tabular-nums">
+                                {money(amountNative, priceCcy)}
                               </div>
-                            )}
+                              {tx.quantity !== null &&
+                                tx.price_per_unit !== null && (
+                                  <div className="text-xs text-slate-500 tabular-nums">
+                                    {tx.quantity} ×{' '}
+                                    {money(tx.price_per_unit, priceCcy)}
+                                  </div>
+                                )}
+                            </>
+                          </PrivacyGate>
                         </div>
                       </div>
                     </Link>

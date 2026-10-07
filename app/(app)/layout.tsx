@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { Sidebar } from '@/components/nav/sidebar'
 import { BottomNav } from '@/components/nav/bottom-nav'
 import { MobileTopBar } from '@/components/nav/mobile-topbar'
-import { AccountPrivacyProvider } from '@/lib/privacy/privacy-context'
+import { AccountPrivacyProvider } from '@/lib/privacy/privacy-provider'
 
 export default async function AppLayout({
   children,

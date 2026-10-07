@@ -7,7 +7,7 @@ import { PortfolioBridgeChart, AssetClassYtdChart } from '@/components/year-anal
 import { MonthlyPerformanceTable, BestWorstCards, AssetBreakdownTable } from '@/components/ytd/ytd-components'
 import { computePortfolioMetrics } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
-import { money, fmtDate } from '@/lib/format'
+import { fmtDate } from '@/lib/format'
 import {
   computeAssetYearRows,
   computeAssetClassSummaries,
@@ -340,7 +340,3 @@ export default async function YtdPage() {
   )
 }
 
-function fmtSignedMoney(n: number | null): string {
-  if (n === null || !Number.isFinite(n)) return '—'
-  return `${n >= 0 ? '+' : ''}${money(n, 'EUR')}`
-}

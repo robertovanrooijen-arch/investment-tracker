@@ -6,6 +6,7 @@
 
 import { money } from '@/lib/format'
 import { categoryLabel } from '@/lib/domain/allocation'
+import { PrivacyGate } from '@/components/ui/privacy-value'
 import type { MonthlyYtdRow, InvestmentYtdRow, AssetClassSummary, AssetClassYtd } from '@/lib/domain/year-analysis'
 import type { Investment, InvestmentType } from '@/types/database'
 
@@ -72,7 +73,7 @@ export function MonthlyPerformanceTable({ rows }: { rows: MonthlyYtdRow[] }) {
               ) : (
                 <>
                   <td className={`py-2.5 pr-3 text-right tabular-nums font-medium ${toneClass(r.gainLossEur)}`}>
-                    {fmtSigned(r.gainLossEur)}
+                    <PrivacyGate fallback="—"><>{fmtSigned(r.gainLossEur)}</></PrivacyGate>
                   </td>
                   <td
                     className={`py-2.5 pr-3 text-right tabular-nums ${toneClass(r.returnPercent)}`}
@@ -86,12 +87,14 @@ export function MonthlyPerformanceTable({ rows }: { rows: MonthlyYtdRow[] }) {
                     {r.spansMultipleMonths && <span className="ml-1 text-slate-400">*</span>}
                   </td>
                   <td className={`py-2.5 pr-3 text-right tabular-nums ${toneClass(r.netContributionEur, 'text-slate-600')}`}>
-                    {fmtSigned(r.netContributionEur)}
+                    <PrivacyGate fallback="—"><>{fmtSigned(r.netContributionEur)}</></PrivacyGate>
                   </td>
                 </>
               )}
               <td className="py-2.5 pr-3 text-right tabular-nums text-slate-700">
-                {r.endValueEur !== null ? money(r.endValueEur, 'EUR') : '—'}
+                <PrivacyGate fallback="—">
+                  <>{r.endValueEur !== null ? money(r.endValueEur, 'EUR') : '—'}</>
+                </PrivacyGate>
               </td>
             </tr>
           ))}
@@ -166,7 +169,9 @@ function PerformerCard({
         <span className={`text-2xl font-semibold tabular-nums ${tone === 'positive' ? 'text-emerald-600' : 'text-rose-600'}`}>
           {fmtPercent(row.ytdReturnPercent)}
         </span>
-        <span className="text-sm tabular-nums text-slate-500">{fmtSigned(row.ytdGrowthEur)}</span>
+        <PrivacyGate>
+          <span className="text-sm tabular-nums text-slate-500">{fmtSigned(row.ytdGrowthEur)}</span>
+        </PrivacyGate>
       </div>
     </div>
   )
@@ -210,11 +215,15 @@ export function AssetBreakdownTable({
             return (
               <tr key={s.type} className="border-b border-slate-50 last:border-0">
                 <td className="py-2.5 pr-3 font-medium text-slate-900">{categoryLabel(s.type)}</td>
-                <td className="py-2.5 pr-3 text-right tabular-nums text-slate-700">{money(s.currentValueEur, 'EUR')}</td>
+                <td className="py-2.5 pr-3 text-right tabular-nums text-slate-700">
+                  <PrivacyGate fallback={`${s.pctOfPortfolio.toFixed(1)}%`}>
+                    <>{money(s.currentValueEur, 'EUR')}</>
+                  </PrivacyGate>
+                </td>
                 {ytd && ytd.growthEur !== null ? (
                   <>
                     <td className={`py-2.5 pr-3 text-right tabular-nums font-medium ${toneClass(ytd.growthEur)}`}>
-                      {fmtSigned(ytd.growthEur)}
+                      <PrivacyGate fallback="—"><>{fmtSigned(ytd.growthEur)}</></PrivacyGate>
                     </td>
                     <td
                       className={`py-2.5 pr-3 text-right tabular-nums ${toneClass(ytd.returnPercent)}`}

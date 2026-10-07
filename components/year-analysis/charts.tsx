@@ -18,6 +18,7 @@ import {
 } from 'recharts'
 import { money } from '@/lib/format'
 import { categoryLabel } from '@/lib/domain/allocation'
+import { useAccountPrivacy } from '@/lib/privacy/privacy-context'
 import type {
   BridgeStep,
   AssetClassSummary,
@@ -99,9 +100,31 @@ function EmptyChartCard({ message }: { message: string }) {
 
 // ── 1. Portfolio bridge / waterfall ─────────────────────────────────────────
 
-function BridgeTooltip({ active, payload }: { active?: boolean; payload?: { payload: BridgeStep }[] }) {
+function BridgeTooltip({
+  active,
+  payload,
+  startAmount,
+}: {
+  active?: boolean
+  payload?: { payload: BridgeStep }[]
+  startAmount: number
+}) {
+  const { hidden } = useAccountPrivacy()
   if (!active || !payload?.length) return null
   const step = payload[0].payload
+
+  if (hidden) {
+    const pct = startAmount !== 0 ? (step.amount / startAmount) * 100 : null
+    return (
+      <TooltipBox>
+        <p className="font-medium text-slate-700">{step.label}</p>
+        <p className="tabular-nums text-slate-900 font-semibold">
+          {pct !== null ? `${!step.isTotal && pct >= 0 ? '+' : ''}${pct.toFixed(1)}%` : '—'}
+        </p>
+      </TooltipBox>
+    )
+  }
+
   return (
     <TooltipBox>
       <p className="font-medium text-slate-700">{step.label}</p>
@@ -113,11 +136,15 @@ function BridgeTooltip({ active, payload }: { active?: boolean; payload?: { payl
 }
 
 export function PortfolioBridgeChart({ steps }: { steps: BridgeStep[] | null }) {
+  const { hidden } = useAccountPrivacy()
+
   if (!steps) {
     return (
       <EmptyChartCard message="No start-of-year snapshot yet — the value bridge needs one to compare against." />
     )
   }
+
+  const startAmount = steps[0]?.amount ?? 0
 
   return (
     <div className="h-72 w-full md:h-96">
@@ -126,12 +153,16 @@ export function PortfolioBridgeChart({ steps }: { steps: BridgeStep[] | null }) 
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
           <XAxis dataKey="label" tick={AXIS_TICK_STYLE} stroke={AXIS_STROKE} />
           <YAxis
-            tickFormatter={(v) => money(typeof v === 'number' ? v : Number(v), 'EUR')}
+            tickFormatter={(v) => {
+              const n = typeof v === 'number' ? v : Number(v)
+              if (hidden) return startAmount !== 0 ? `${((n / startAmount) * 100).toFixed(0)}%` : '—'
+              return money(n, 'EUR')
+            }}
             tick={AXIS_TICK_STYLE}
             stroke={AXIS_STROKE}
             width={96}
           />
-          <Tooltip content={<BridgeTooltip />} cursor={{ fill: '#f1f5f9' }} />
+          <Tooltip content={<BridgeTooltip startAmount={startAmount} />} cursor={{ fill: '#f1f5f9' }} />
           <Bar dataKey="base" stackId="bridge" fill="transparent" isAnimationActive={false} />
           <Bar dataKey="value" stackId="bridge" radius={[4, 4, 0, 0]} isAnimationActive={false}>
             {steps.map((s) => (
@@ -157,6 +188,7 @@ function AllocationTooltip({
   payload?: AllocTooltipPayload[]
   total: number
 }) {
+  const { hidden } = useAccountPrivacy()
   if (!active || !payload?.length) return null
   const { name, value, payload: row } = payload[0]
   const pct = total > 0 ? (value / total) * 100 : 0
@@ -166,13 +198,14 @@ function AllocationTooltip({
         {name}
         {row.isCashClass ? ' · Cash' : ''}
       </p>
-      <p className="tabular-nums text-slate-900">{money(value, 'EUR')}</p>
+      {!hidden && <p className="tabular-nums text-slate-900">{money(value, 'EUR')}</p>}
       <p className="text-slate-500">{pct.toFixed(1)}%</p>
     </TooltipBox>
   )
 }
 
 export function AssetClassAllocationChart({ classSummaries }: { classSummaries: AssetClassSummary[] }) {
+  const { hidden } = useAccountPrivacy()
   const total = classSummaries.reduce((s, c) => s + c.currentValueEur, 0)
 
   const renderTooltip = useCallback(
@@ -223,7 +256,9 @@ export function AssetClassAllocationChart({ classSummaries }: { classSummaries: 
             </div>
             <div className="flex items-center gap-3 shrink-0">
               <span className="text-slate-500 tabular-nums">{c.pctOfPortfolio.toFixed(1)}%</span>
-              <span className="font-semibold text-slate-900 tabular-nums">{money(c.currentValueEur, 'EUR')}</span>
+              {!hidden && (
+                <span className="font-semibold text-slate-900 tabular-nums">{money(c.currentValueEur, 'EUR')}</span>
+              )}
             </div>
           </li>
         ))}
@@ -236,9 +271,27 @@ export function AssetClassAllocationChart({ classSummaries }: { classSummaries: 
 
 type ClassPnlRow = AssetClassSummary & { label: string }
 
-function ClassPnlTooltip({ active, payload }: { active?: boolean; payload?: { payload: ClassPnlRow }[] }) {
+function ClassPnlTooltip({
+  active,
+  payload,
+  hidden,
+}: {
+  active?: boolean
+  payload?: { payload: ClassPnlRow }[]
+  hidden: boolean
+}) {
   if (!active || !payload?.length) return null
   const row = payload[0].payload
+  if (hidden) {
+    return (
+      <TooltipBox>
+        <p className="font-medium text-slate-700">{row.label}</p>
+        <p className="tabular-nums text-slate-900 font-semibold">
+          {row.totalPLPercent !== null ? `${fmtSigned(row.totalPLPercent)}%` : 'Not applicable'}
+        </p>
+      </TooltipBox>
+    )
+  }
   return (
     <TooltipBox>
       <p className="font-medium text-slate-700">{row.label}</p>
@@ -251,6 +304,7 @@ function ClassPnlTooltip({ active, payload }: { active?: boolean; payload?: { pa
 }
 
 export function AssetClassPnlChart({ classSummaries }: { classSummaries: AssetClassSummary[] }) {
+  const { hidden } = useAccountPrivacy()
   const rows: ClassPnlRow[] = classSummaries
     .filter((c) => !c.isCashClass && c.totalPLEur !== null)
     .map((c) => ({ ...c, label: categoryLabel(c.type) }))
@@ -260,6 +314,12 @@ export function AssetClassPnlChart({ classSummaries }: { classSummaries: AssetCl
     return <EmptyChartCard message="No investment P/L to show yet this year." />
   }
 
+  // Privacy mode plots the % field instead of the € field — a different
+  // dataKey, not just a different label, so the bar lengths themselves
+  // never encode an absolute euro amount either.
+  const metricKey = hidden ? 'totalPLPercent' : 'totalPLEur'
+  const toneOf = (r: ClassPnlRow) => (hidden ? r.totalPLPercent : r.totalPLEur) ?? 0
+
   return (
     <div>
       <div style={{ height: Math.max(rows.length * 52, 170) }}>
@@ -268,7 +328,10 @@ export function AssetClassPnlChart({ classSummaries }: { classSummaries: AssetCl
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
             <XAxis
               type="number"
-              tickFormatter={(v) => money(typeof v === 'number' ? v : Number(v), 'EUR')}
+              tickFormatter={(v) => {
+                const n = typeof v === 'number' ? v : Number(v)
+                return hidden ? `${n.toFixed(0)}%` : money(n, 'EUR')
+              }}
               tick={AXIS_TICK_STYLE}
               stroke={AXIS_STROKE}
             />
@@ -280,10 +343,10 @@ export function AssetClassPnlChart({ classSummaries }: { classSummaries: AssetCl
               stroke={AXIS_STROKE}
             />
             <ReferenceLine x={0} {...ZERO_LINE_STYLE} />
-            <Tooltip content={<ClassPnlTooltip />} cursor={{ fill: '#f1f5f9' }} />
-            <Bar dataKey="totalPLEur" radius={4} isAnimationActive={false}>
+            <Tooltip content={<ClassPnlTooltip hidden={hidden} />} cursor={{ fill: '#f1f5f9' }} />
+            <Bar dataKey={metricKey} radius={4} isAnimationActive={false}>
               {rows.map((r) => (
-                <Cell key={r.type} fill={(r.totalPLEur ?? 0) >= 0 ? TONE_COLOR.positive : TONE_COLOR.negative} />
+                <Cell key={r.type} fill={toneOf(r) >= 0 ? TONE_COLOR.positive : TONE_COLOR.negative} />
               ))}
             </Bar>
           </BarChart>
@@ -301,17 +364,29 @@ export function AssetClassPnlChart({ classSummaries }: { classSummaries: AssetCl
 
 type ClassYtdRow = AssetClassYtd & { label: string; pctLabel: string }
 
-function ClassYtdTooltip({ active, payload }: { active?: boolean; payload?: { payload: ClassYtdRow }[] }) {
+function ClassYtdTooltip({
+  active,
+  payload,
+  hidden,
+}: {
+  active?: boolean
+  payload?: { payload: ClassYtdRow }[]
+  hidden: boolean
+}) {
   if (!active || !payload?.length) return null
   const row = payload[0].payload
   return (
     <TooltipBox>
       <p className="font-medium text-slate-700">{row.label}</p>
-      <p className="tabular-nums text-slate-900 font-semibold">
-        {row.growthEur !== null ? fmtSigned(row.growthEur) : 'Not applicable'}
-      </p>
+      {!hidden && (
+        <p className="tabular-nums text-slate-900 font-semibold">
+          {row.growthEur !== null ? fmtSigned(row.growthEur) : 'Not applicable'}
+        </p>
+      )}
       {row.returnPercent !== null ? (
-        <p className="text-slate-500">{fmtSigned(row.returnPercent)}% · Modified Dietz</p>
+        <p className={hidden ? 'tabular-nums text-slate-900 font-semibold' : 'text-slate-500'}>
+          {fmtSigned(row.returnPercent)}% · Modified Dietz
+        </p>
       ) : (
         row.growthEur !== null &&
         row.percentUnavailableReason && (
@@ -330,6 +405,7 @@ function ClassYtdTooltip({ active, payload }: { active?: boolean; payload?: { pa
 }
 
 export function AssetClassYtdChart({ classYtd }: { classYtd: AssetClassYtd[] }) {
+  const { hidden } = useAccountPrivacy()
   const rows: ClassYtdRow[] = classYtd
     .filter((c) => c.growthEur !== null)
     .map((c) => ({
@@ -342,6 +418,11 @@ export function AssetClassYtdChart({ classYtd }: { classYtd: AssetClassYtd[] }) 
     return <EmptyChartCard message="No selected-year performance available yet — see caveat above." />
   }
 
+  // Same reasoning as AssetClassPnlChart: plot the % field's own dataKey
+  // while hidden, not just relabel the € bars.
+  const metricKey = hidden ? 'returnPercent' : 'growthEur'
+  const toneOf = (r: ClassYtdRow) => (hidden ? r.returnPercent : r.growthEur) ?? 0
+
   return (
     <div>
       <div style={{ height: Math.max(rows.length * 52, 170) }}>
@@ -350,7 +431,10 @@ export function AssetClassYtdChart({ classYtd }: { classYtd: AssetClassYtd[] }) 
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
             <XAxis
               type="number"
-              tickFormatter={(v) => money(typeof v === 'number' ? v : Number(v), 'EUR')}
+              tickFormatter={(v) => {
+                const n = typeof v === 'number' ? v : Number(v)
+                return hidden ? `${n.toFixed(0)}%` : money(n, 'EUR')
+              }}
               tick={AXIS_TICK_STYLE}
               stroke={AXIS_STROKE}
             />
@@ -362,21 +446,21 @@ export function AssetClassYtdChart({ classYtd }: { classYtd: AssetClassYtd[] }) 
               stroke={AXIS_STROKE}
             />
             <ReferenceLine x={0} {...ZERO_LINE_STYLE} />
-            <Tooltip content={<ClassYtdTooltip />} cursor={{ fill: '#f1f5f9' }} />
-            <Bar dataKey="growthEur" radius={4} isAnimationActive={false}>
+            <Tooltip content={<ClassYtdTooltip hidden={hidden} />} cursor={{ fill: '#f1f5f9' }} />
+            <Bar dataKey={metricKey} radius={4} isAnimationActive={false}>
               {rows.map((r) => (
                 <Cell
                   key={r.type}
                   fill={
-                    (r.growthEur ?? 0) > 0
+                    toneOf(r) > 0
                       ? TONE_COLOR.positive
-                      : (r.growthEur ?? 0) < 0
+                      : toneOf(r) < 0
                         ? TONE_COLOR.negative
                         : TONE_COLOR.neutral
                   }
                 />
               ))}
-              <LabelList dataKey="pctLabel" position="right" style={{ fill: '#64748b', fontSize: 12 }} />
+              {!hidden && <LabelList dataKey="pctLabel" position="right" style={{ fill: '#64748b', fontSize: 12 }} />}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -398,7 +482,15 @@ export function AssetClassYtdChart({ classYtd }: { classYtd: AssetClassYtd[] }) 
 
 type RankingRow = AssetPnlRankingRow & { label: string }
 
-function RankingTooltip({ active, payload }: { active?: boolean; payload?: { payload: RankingRow }[] }) {
+function RankingTooltip({
+  active,
+  payload,
+  hidden,
+}: {
+  active?: boolean
+  payload?: { payload: RankingRow }[]
+  hidden: boolean
+}) {
   if (!active || !payload?.length) return null
   const row = payload[0].payload
   return (
@@ -407,18 +499,29 @@ function RankingTooltip({ active, payload }: { active?: boolean; payload?: { pay
       <p className="text-slate-500">
         {row.platform} · {categoryLabel(row.type)}
       </p>
-      <p className="tabular-nums text-slate-900 font-semibold">{fmtSigned(row.totalPLEur)}</p>
-      {row.totalPLPercent !== null && <p className="text-slate-500">{fmtSigned(row.totalPLPercent)}%</p>}
+      {hidden ? (
+        <p className="tabular-nums text-slate-900 font-semibold">
+          {row.totalPLPercent !== null ? `${fmtSigned(row.totalPLPercent)}%` : 'Not applicable'}
+        </p>
+      ) : (
+        <>
+          <p className="tabular-nums text-slate-900 font-semibold">{fmtSigned(row.totalPLEur)}</p>
+          {row.totalPLPercent !== null && <p className="text-slate-500">{fmtSigned(row.totalPLPercent)}%</p>}
+        </>
+      )}
     </TooltipBox>
   )
 }
 
 export function AssetPnlRankingChart({ rows }: { rows: AssetPnlRankingRow[] }) {
+  const { hidden } = useAccountPrivacy()
   if (rows.length === 0) {
     return <EmptyChartCard message="No non-cash P/L to rank yet this year." />
   }
 
   const data: RankingRow[] = rows.map((r) => ({ ...r, label: `${r.name} · ${r.platform}` }))
+  const metricKey = hidden ? 'totalPLPercent' : 'totalPLEur'
+  const toneOf = (r: RankingRow) => (hidden ? r.totalPLPercent ?? 0 : r.totalPLEur)
 
   return (
     <div style={{ height: Math.max(data.length * 52, 200) }}>
@@ -427,7 +530,10 @@ export function AssetPnlRankingChart({ rows }: { rows: AssetPnlRankingRow[] }) {
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
           <XAxis
             type="number"
-            tickFormatter={(v) => money(typeof v === 'number' ? v : Number(v), 'EUR')}
+            tickFormatter={(v) => {
+              const n = typeof v === 'number' ? v : Number(v)
+              return hidden ? `${n.toFixed(0)}%` : money(n, 'EUR')
+            }}
             tick={AXIS_TICK_STYLE}
             stroke={AXIS_STROKE}
           />
@@ -439,10 +545,10 @@ export function AssetPnlRankingChart({ rows }: { rows: AssetPnlRankingRow[] }) {
             stroke={AXIS_STROKE}
           />
           <ReferenceLine x={0} {...ZERO_LINE_STYLE} />
-          <Tooltip content={<RankingTooltip />} cursor={{ fill: '#f1f5f9' }} />
-          <Bar dataKey="totalPLEur" radius={4} isAnimationActive={false} barSize={26}>
+          <Tooltip content={<RankingTooltip hidden={hidden} />} cursor={{ fill: '#f1f5f9' }} />
+          <Bar dataKey={metricKey} radius={4} isAnimationActive={false} barSize={26}>
             {data.map((r) => (
-              <Cell key={r.investmentId} fill={r.totalPLEur >= 0 ? TONE_COLOR.positive : TONE_COLOR.negative} />
+              <Cell key={r.investmentId} fill={toneOf(r) >= 0 ? TONE_COLOR.positive : TONE_COLOR.negative} />
             ))}
           </Bar>
         </BarChart>
@@ -457,13 +563,23 @@ function CashflowTooltip({
   active,
   payload,
   label,
+  hidden,
 }: {
   active?: boolean
   payload?: { payload: MonthlyCashflowRow }[]
   label?: string
+  hidden: boolean
 }) {
   if (!active || !payload?.length) return null
   const row = payload[0].payload
+  if (hidden) {
+    return (
+      <TooltipBox>
+        <p className="font-medium text-slate-700">{label}</p>
+        <p className="text-slate-500">Contribution amounts hidden</p>
+      </TooltipBox>
+    )
+  }
   return (
     <TooltipBox>
       <p className="font-medium text-slate-700">{label}</p>
@@ -475,6 +591,7 @@ function CashflowTooltip({
 }
 
 export function MonthlyCashflowChart({ rows }: { rows: MonthlyCashflowRow[] }) {
+  const { hidden } = useAccountPrivacy()
   const hasAny = rows.some((r) => r.inflowEur > 0 || r.outflowEur > 0)
   if (!hasAny) {
     return <EmptyChartCard message="No contributions or withdrawals recorded this year." />
@@ -482,6 +599,10 @@ export function MonthlyCashflowChart({ rows }: { rows: MonthlyCashflowRow[] }) {
 
   const data = rows.map((r) => ({ ...r, negOutflowEur: -r.outflowEur }))
 
+  // No percentage stands in for an absolute contribution amount — there's
+  // no sensible "% of X" for a monthly deposit/withdrawal — so hidden mode
+  // keeps the bar shapes (relative months of activity) but drops every
+  // number: no axis figures, no tooltip amounts.
   return (
     <div className="h-72 w-full md:h-80">
       <ResponsiveContainer width="100%" height="100%">
@@ -489,13 +610,13 @@ export function MonthlyCashflowChart({ rows }: { rows: MonthlyCashflowRow[] }) {
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
           <XAxis dataKey="label" tick={AXIS_TICK_STYLE} stroke={AXIS_STROKE} />
           <YAxis
-            tickFormatter={(v) => money(typeof v === 'number' ? v : Number(v), 'EUR')}
+            tickFormatter={(v) => (hidden ? '' : money(typeof v === 'number' ? v : Number(v), 'EUR'))}
             tick={AXIS_TICK_STYLE}
             stroke={AXIS_STROKE}
-            width={96}
+            width={hidden ? 24 : 96}
           />
           <ReferenceLine y={0} {...ZERO_LINE_STYLE} />
-          <Tooltip content={<CashflowTooltip />} cursor={{ fill: '#f1f5f9' }} />
+          <Tooltip content={<CashflowTooltip hidden={hidden} />} cursor={{ fill: '#f1f5f9' }} />
           <Bar dataKey="inflowEur" fill="#0ea5e9" radius={[3, 3, 0, 0]} isAnimationActive={false} name="In" />
           <Bar dataKey="negOutflowEur" fill="#f59e0b" radius={[0, 0, 3, 3]} isAnimationActive={false} name="Out" />
         </BarChart>
