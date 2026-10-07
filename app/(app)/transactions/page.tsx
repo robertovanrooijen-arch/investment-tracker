@@ -7,6 +7,7 @@ import { money, fmtDate } from '@/lib/format'
 import { txTypeBadgeClass } from '@/lib/domain/transaction-helpers'
 import { txAmountInEur } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
+import { PrivacyGate } from '@/components/ui/privacy-value'
 import type { Transaction, InvestmentType } from '@/types/database'
 
 type TxRow = Transaction & {
@@ -115,7 +116,9 @@ export default async function TransactionsPage() {
                       </Badge>
                     </td>
                     <td className="px-6 py-4 text-right text-sm text-slate-700">
-                      {tx.quantity !== null ? tx.quantity : '—'}
+                      <PrivacyGate fallback="—">
+                        <>{tx.quantity !== null ? tx.quantity : '—'}</>
+                      </PrivacyGate>
                     </td>
                     <td className="px-6 py-4 text-right text-sm text-slate-700">
                       {tx.price_per_unit !== null
@@ -123,10 +126,14 @@ export default async function TransactionsPage() {
                         : '—'}
                     </td>
                     <td className="px-6 py-4 text-right text-sm text-slate-900">
-                      {money(amountEur, 'EUR')}
+                      <PrivacyGate fallback="—">
+                        <>{money(amountEur, 'EUR')}</>
+                      </PrivacyGate>
                     </td>
                     <td className="px-6 py-4 text-right text-sm text-slate-500">
-                      {tx.fee > 0 ? money(tx.fee, feeCcy) : '—'}
+                      <PrivacyGate fallback="—">
+                        <>{tx.fee > 0 ? money(tx.fee, feeCcy) : '—'}</>
+                      </PrivacyGate>
                     </td>
                   </ClickableTr>
                 )
@@ -160,14 +167,28 @@ export default async function TransactionsPage() {
                         </div>
                       </div>
                       <div className="text-right shrink-0">
-                        <div className="text-sm text-slate-900">
-                          {money(amountEur, 'EUR')}
-                        </div>
-                        {tx.quantity !== null && tx.price_per_unit !== null && (
-                          <div className="text-xs text-slate-500">
-                            {tx.quantity} × {money(tx.price_per_unit, priceCcy)}
-                          </div>
-                        )}
+                        <PrivacyGate
+                          fallback={
+                            tx.quantity !== null && tx.price_per_unit !== null ? (
+                              <div className="text-sm text-slate-500">
+                                × {money(tx.price_per_unit, priceCcy)}
+                              </div>
+                            ) : (
+                              <div className="text-sm text-slate-900">—</div>
+                            )
+                          }
+                        >
+                          <>
+                            <div className="text-sm text-slate-900">
+                              {money(amountEur, 'EUR')}
+                            </div>
+                            {tx.quantity !== null && tx.price_per_unit !== null && (
+                              <div className="text-xs text-slate-500">
+                                {tx.quantity} × {money(tx.price_per_unit, priceCcy)}
+                              </div>
+                            )}
+                          </>
+                        </PrivacyGate>
                       </div>
                     </div>
                   </Link>

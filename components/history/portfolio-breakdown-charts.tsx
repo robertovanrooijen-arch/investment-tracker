@@ -14,7 +14,10 @@ import { money } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
 import type { AllocationSlice, PortfolioMetrics } from '@/lib/domain/calculations'
 import { CATEGORY_HEX, PLATFORM_HEX, FALLBACK_HEX } from '@/lib/colors'
-import { categorySlug } from '@/lib/domain/allocation'
+import { categorySlug, categoryLabel } from '@/lib/domain/allocation'
+import { ViewDetailsLink } from '@/components/ui/view-details-link'
+import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
+import type { InvestmentType } from '@/types/database'
 
 function colorFor(map: Record<string, string>, key: string): string {
   return map[key] ?? FALLBACK_HEX
@@ -42,7 +45,9 @@ function PieTooltipContent({
   return (
     <div className="min-w-[140px] rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-lg text-xs">
       <p className="font-medium text-slate-700">{name}</p>
-      <p className="tabular-nums text-slate-900">{money(value, 'EUR')}</p>
+      <PrivacyGate>
+        <p className="tabular-nums text-slate-900">{money(value, 'EUR')}</p>
+      </PrivacyGate>
       <p className="text-slate-500">{share.toFixed(1)}%</p>
     </div>
   )
@@ -56,6 +61,7 @@ function AllocationDonut({
   colorMap,
   linkForKey,
   detailsHref,
+  labelForKey = (key) => key,
 }: {
   title: string
   slices: AllocationSlice[]
@@ -64,6 +70,8 @@ function AllocationDonut({
   linkForKey?: (key: string) => string
   /** When provided, shows a "View details →" link next to the title. */
   detailsHref?: string
+  /** Display label for a slice's raw key — e.g. the canonical asset-class name instead of the raw InvestmentType. Defaults to showing the key as-is (used for "By platform", where the raw key already is the display name). */
+  labelForKey?: (key: string) => string
 }) {
   const router = useRouter()
   const total = slices.reduce((s, x) => s + x.value, 0)
@@ -88,21 +96,14 @@ function AllocationDonut({
     <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
       <div className="flex items-center justify-between mb-1">
         <h2 className="text-base font-semibold text-slate-900">{title}</h2>
-        {detailsHref && (
-          <Link
-            href={detailsHref}
-            className="text-xs font-medium text-slate-500 hover:text-slate-900"
-          >
-            View details →
-          </Link>
-        )}
+        {detailsHref && <ViewDetailsLink href={detailsHref} />}
       </div>
 
       <div className="h-44">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
-              data={slices.map((s) => ({ ...s, name: s.key }))}
+              data={slices.map((s) => ({ ...s, name: labelForKey(s.key) }))}
               cx="50%"
               cy="50%"
               innerRadius={46}
@@ -140,11 +141,13 @@ function AllocationDonut({
                   className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
                   style={{ backgroundColor: colorFor(colorMap, s.key) }}
                 />
-                <span className="truncate text-slate-700">{s.key}</span>
+                <span className="truncate text-slate-700">{labelForKey(s.key)}</span>
               </div>
               <div className="flex items-center gap-3 shrink-0">
                 <span className="text-slate-500 tabular-nums">{pct(s.pct)}</span>
-                <span className="font-medium text-slate-900 tabular-nums">{money(s.value)}</span>
+                <PrivacyGate>
+                  <span className="font-medium text-slate-900 tabular-nums">{money(s.value)}</span>
+                </PrivacyGate>
               </div>
             </div>
           )
@@ -184,7 +187,7 @@ function barColor(n: number): string {
 }
 
 function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
-  const { totalRealized, totalUnrealized, totalProfit, totalEverInvested } = metrics
+  const { totalRealized, totalUnrealized, totalProfit } = metrics
   // Avoid divide-by-zero; if both are 0 show zero bars
   const absTotal = Math.abs(totalRealized) + Math.abs(totalUnrealized) || 1
 
@@ -193,10 +196,17 @@ function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
   }
 
   const profitTone = totalProfit > 0 ? 'text-emerald-700' : totalProfit < 0 ? 'text-rose-700' : 'text-slate-900'
+  // Read the canonical ratio straight from computePortfolioMetrics rather
+  // than re-deriving it here — this is the exact number the Dashboard's
+  // other P/L surfaces and Profit/Loss Details both read, so it can't drift.
+  const totalProfitPct = metrics.totalProfitPct !== null ? metrics.totalProfitPct * 100 : null
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
-      <h2 className="text-base font-semibold text-slate-900 mb-4">Profit / loss breakdown</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-base font-semibold text-slate-900">Profit / loss breakdown</h2>
+        <ViewDetailsLink href="/portfolio/profit-loss" />
+      </div>
 
       <div className="space-y-4">
         {/* Unrealized */}
@@ -204,7 +214,7 @@ function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
           <div className="flex items-center justify-between text-sm mb-1.5">
             <span className="text-slate-600">Unrealized</span>
             <span className={`font-medium tabular-nums ${tone(totalUnrealized)}`}>
-              {totalUnrealized >= 0 ? '+' : ''}{money(totalUnrealized, 'EUR')}
+              <PrivacyMoney value={totalUnrealized} signed fallbackText="—" />
             </span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
@@ -220,7 +230,7 @@ function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
           <div className="flex items-center justify-between text-sm mb-1.5">
             <span className="text-slate-600">Realized</span>
             <span className={`font-medium tabular-nums ${tone(totalRealized)}`}>
-              {totalRealized >= 0 ? '+' : ''}{money(totalRealized, 'EUR')}
+              <PrivacyMoney value={totalRealized} signed fallbackText="—" />
             </span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
@@ -235,14 +245,24 @@ function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
         <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
           <span className="text-sm font-medium text-slate-900">Total profit / loss</span>
           <div className="text-right">
-            <span className={`text-base font-semibold tabular-nums ${profitTone}`}>
-              {totalProfit >= 0 ? '+' : ''}{money(totalProfit, 'EUR')}
-            </span>
-            {totalEverInvested > 0 && (
-              <span className="ml-2 text-xs text-slate-500 tabular-nums">
-                ({totalProfit >= 0 ? '+' : ''}{((totalProfit / totalEverInvested) * 100).toFixed(2)}%)
+            <PrivacyGate
+              fallback={
+                totalProfitPct !== null && (
+                  <span className={`text-base font-semibold tabular-nums ${profitTone}`}>
+                    {totalProfitPct >= 0 ? '+' : ''}{totalProfitPct.toFixed(2)}%
+                  </span>
+                )
+              }
+            >
+              <span className={`text-base font-semibold tabular-nums ${profitTone}`}>
+                {totalProfit >= 0 ? '+' : ''}{money(totalProfit, 'EUR')}
               </span>
-            )}
+              {totalProfitPct !== null && (
+                <span className="ml-2 text-xs text-slate-500 tabular-nums">
+                  ({totalProfitPct >= 0 ? '+' : ''}{totalProfitPct.toFixed(2)}%)
+                </span>
+              )}
+            </PrivacyGate>
           </div>
         </div>
       </div>
@@ -268,6 +288,7 @@ export function PortfolioBreakdownCharts({ byCategory, byPlatform, liveMetrics }
           colorMap={CATEGORY_HEX}
           linkForKey={(key) => `/portfolio/allocation?category=${categorySlug(key)}`}
           detailsHref="/portfolio/allocation"
+          labelForKey={(key) => categoryLabel(key as InvestmentType)}
         />
         <AllocationDonut title="By platform" slices={byPlatform} colorMap={PLATFORM_HEX} />
       </div>

@@ -5,6 +5,7 @@
 'use client'
 
 import { money } from '@/lib/format'
+import { categoryLabel } from '@/lib/domain/allocation'
 import type { MonthlyYtdRow, InvestmentYtdRow, AssetClassSummary, AssetClassYtd } from '@/lib/domain/year-analysis'
 import type { Investment, InvestmentType } from '@/types/database'
 
@@ -25,16 +26,6 @@ function fmtSigned(n: number | null): string {
 function toneClass(n: number | null, neutral = 'text-slate-500'): string {
   if (n === null || !Number.isFinite(n) || n === 0) return neutral
   return n > 0 ? 'text-emerald-600' : 'text-rose-600'
-}
-
-const TYPE_LABELS: Record<string, string> = {
-  stock: 'Stocks',
-  ETF: 'ETFs',
-  crypto: 'Crypto',
-  cash: 'Cash',
-  'real estate': 'Real estate',
-  commodity: 'Commodities',
-  custom: 'Custom',
 }
 
 // ── Monthly performance table ───────────────────────────────────────────────
@@ -218,7 +209,7 @@ export function AssetBreakdownTable({
             const ytd = ytdByType.get(s.type)
             return (
               <tr key={s.type} className="border-b border-slate-50 last:border-0">
-                <td className="py-2.5 pr-3 font-medium text-slate-900">{TYPE_LABELS[s.type] ?? s.type}</td>
+                <td className="py-2.5 pr-3 font-medium text-slate-900">{categoryLabel(s.type)}</td>
                 <td className="py-2.5 pr-3 text-right tabular-nums text-slate-700">{money(s.currentValueEur, 'EUR')}</td>
                 {ytd && ytd.growthEur !== null ? (
                   <>

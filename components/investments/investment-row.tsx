@@ -4,6 +4,8 @@ import { useRouter } from 'next/navigation'
 import { money, fmtDate } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
 import { isCashLikeInvestment } from '@/lib/domain/constants'
+import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
+import { categoryLabel } from '@/lib/domain/allocation'
 import type { InvestmentMetrics } from '@/lib/domain/calculations'
 import type { InvestmentYtdRow } from '@/lib/domain/year-analysis'
 import type { Investment } from '@/types/database'
@@ -13,6 +15,7 @@ export type PrevSnap = { value_eur: number; quantity: number | null }
 type Props = {
   inv: Investment
   m: InvestmentMetrics
+  portfolioWeight: number | null
   dailyChangeEur: number | null
   dailyChangePct: number | null
   ytd: InvestmentYtdRow | null
@@ -50,16 +53,18 @@ export function YtdCell({ ytd }: { ytd: InvestmentYtdRow | null }) {
         {percentUnavailable ? '—' : `${ytd.ytdReturnPercent! >= 0 ? '+' : ''}${ytd.ytdReturnPercent!.toFixed(1)}%`}
       </div>
       {ytd.ytdGrowthEur !== null && (
-        <div className="text-xs text-slate-400">
-          {ytd.ytdGrowthEur >= 0 ? '+' : ''}
-          {money(ytd.ytdGrowthEur, 'EUR')}
-        </div>
+        <PrivacyGate>
+          <div className="text-xs text-slate-400">
+            {ytd.ytdGrowthEur >= 0 ? '+' : ''}
+            {money(ytd.ytdGrowthEur, 'EUR')}
+          </div>
+        </PrivacyGate>
       )}
     </div>
   )
 }
 
-export function InvestmentRow({ inv, m, dailyChangeEur, dailyChangePct, ytd }: Props) {
+export function InvestmentRow({ inv, m, portfolioWeight, dailyChangeEur, dailyChangePct, ytd }: Props) {
   const router = useRouter()
   const href = `/investments/${inv.id}`
 
@@ -120,14 +125,17 @@ export function InvestmentRow({ inv, m, dailyChangeEur, dailyChangePct, ytd }: P
 
       <td className="px-6 py-4">
         <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
-          {inv.type}
+          {categoryLabel(inv.type)}
         </span>
       </td>
 
       <td className="px-6 py-4 text-sm text-slate-700">{inv.platform}</td>
 
       <td className="px-6 py-4 text-right text-sm text-slate-900 tabular-nums">
-        {money(m.currentValue, 'EUR')}
+        <PrivacyMoney
+          value={m.currentValue}
+          fallbackText={portfolioWeight !== null ? `${pct(portfolioWeight)} weight` : '—'}
+        />
       </td>
 
       <td className={`px-6 py-4 text-right text-sm tabular-nums ${isCashLike ? '' : plTone}`}>
@@ -135,10 +143,12 @@ export function InvestmentRow({ inv, m, dailyChangeEur, dailyChangePct, ytd }: P
           <span className="text-slate-400">Not applicable</span>
         ) : showPL ? (
           <>
-            <div>{money(m.totalProfit, 'EUR')}</div>
-            <div className="text-xs">
-              {m.totalProfitPct !== null ? pct(m.totalProfitPct) : '—'}
-            </div>
+            <PrivacyGate fallback={<div>{m.totalProfitPct !== null ? pct(m.totalProfitPct) : '—'}</div>}>
+              <div>{money(m.totalProfit, 'EUR')}</div>
+              <div className="text-xs">
+                {m.totalProfitPct !== null ? pct(m.totalProfitPct) : '—'}
+              </div>
+            </PrivacyGate>
           </>
         ) : (
           <span className="text-slate-400">—</span>
@@ -151,7 +161,15 @@ export function InvestmentRow({ inv, m, dailyChangeEur, dailyChangePct, ytd }: P
 
       <td className={`px-6 py-4 text-right text-sm tabular-nums ${dailyTone}`}>
         {dailyChangeEur !== null ? (
-          <>
+          <PrivacyGate
+            fallback={
+              <div>
+                {dailyChangePct !== null
+                  ? `${dailyChangePct >= 0 ? '+' : ''}${dailyChangePct.toFixed(2)}%`
+                  : '—'}
+              </div>
+            }
+          >
             <div>
               {dailyChangeEur >= 0 ? '+' : ''}
               {money(dailyChangeEur, 'EUR')}
@@ -161,7 +179,7 @@ export function InvestmentRow({ inv, m, dailyChangeEur, dailyChangePct, ytd }: P
                 ? `${dailyChangePct >= 0 ? '+' : ''}${dailyChangePct.toFixed(2)}%`
                 : '—'}
             </div>
-          </>
+          </PrivacyGate>
         ) : (
           <span className="text-slate-400">—</span>
         )}

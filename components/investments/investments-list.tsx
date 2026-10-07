@@ -4,6 +4,8 @@ import { useState, useMemo } from 'react'
 import Link from 'next/link'
 import { money, fmtDate } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
+import { PrivacyGate } from '@/components/ui/privacy-value'
+import { categoryLabel } from '@/lib/domain/allocation'
 import { CATEGORIES, isCashLikeInvestment } from '@/lib/domain/constants'
 import { combineInvestmentYtd } from '@/lib/domain/year-analysis'
 import { InvestmentRow } from './investment-row'
@@ -14,6 +16,8 @@ import type { Investment, InvestmentType } from '@/types/database'
 export type PreparedRow = {
   inv: Investment
   m: InvestmentMetrics
+  /** Share of the whole (unfiltered) portfolio, 0–1 — shown instead of the raw value in privacy mode. */
+  portfolioWeight: number | null
   dailyChangeEur: number | null
   dailyChangePct: number | null
   ytd: InvestmentYtdRow | null
@@ -292,7 +296,7 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
         {CATEGORIES.map((t) => (
           <FilterPill
             key={t}
-            label={t}
+            label={categoryLabel(t)}
             active={typeFilter === t}
             onClick={() => setTypeFilter(t)}
           />
@@ -490,11 +494,12 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
               </tr>
             </thead>
             <tbody>
-              {filtered.map(({ inv, m, dailyChangeEur, dailyChangePct, ytd }) => (
+              {filtered.map(({ inv, m, portfolioWeight, dailyChangeEur, dailyChangePct, ytd }) => (
                 <InvestmentRow
                   key={inv.id}
                   inv={inv}
                   m={m}
+                  portfolioWeight={portfolioWeight}
                   dailyChangeEur={dailyChangeEur}
                   dailyChangePct={dailyChangePct}
                   ytd={ytd}
@@ -509,14 +514,20 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
                     ({filtered.length} shown)
                   </span>
                 </td>
-                <td className="px-6 py-3.5 text-right tabular-nums">{money(totals.value, 'EUR')}</td>
+                <td className="px-6 py-3.5 text-right tabular-nums">
+                  <PrivacyGate fallback="—">
+                    <>{money(totals.value, 'EUR')}</>
+                  </PrivacyGate>
+                </td>
                 <td
                   className="px-6 py-3.5 text-right tabular-nums"
                   title="Total P/L % is hidden because visible rows can mix open, closed, realized, unrealized, and cash-excluded positions. Use Dashboard for all-time portfolio P/L %."
                 >
-                  <div className={totals.pl > 0 ? 'text-emerald-600' : totals.pl < 0 ? 'text-rose-600' : ''}>
-                    {money(totals.pl, 'EUR')}
-                  </div>
+                  <PrivacyGate fallback={<div>—</div>}>
+                    <div className={totals.pl > 0 ? 'text-emerald-600' : totals.pl < 0 ? 'text-rose-600' : ''}>
+                      {money(totals.pl, 'EUR')}
+                    </div>
+                  </PrivacyGate>
                   <div className="text-xs font-normal text-slate-400">—</div>
                 </td>
                 <td
@@ -543,10 +554,12 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
                           ? `${totals.ytdReturnPercent >= 0 ? '+' : ''}${totals.ytdReturnPercent.toFixed(1)}%`
                           : '—'}
                       </div>
-                      <div className="text-xs font-normal text-slate-400">
-                        {totals.ytdGrowthEur >= 0 ? '+' : ''}
-                        {money(totals.ytdGrowthEur, 'EUR')}
-                      </div>
+                      <PrivacyGate>
+                        <div className="text-xs font-normal text-slate-400">
+                          {totals.ytdGrowthEur >= 0 ? '+' : ''}
+                          {money(totals.ytdGrowthEur, 'EUR')}
+                        </div>
+                      </PrivacyGate>
                     </>
                   ) : (
                     <span className="text-slate-400">—</span>
@@ -554,7 +567,15 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
                 </td>
                 <td className="px-6 py-3.5 text-right tabular-nums">
                   {totals.dailyEur !== null ? (
-                    <>
+                    <PrivacyGate
+                      fallback={
+                        <div>
+                          {totals.dailyPct !== null
+                            ? `${totals.dailyPct >= 0 ? '+' : ''}${totals.dailyPct.toFixed(2)}%`
+                            : '—'}
+                        </div>
+                      }
+                    >
                       <div className={totals.dailyEur > 0 ? 'text-emerald-600' : totals.dailyEur < 0 ? 'text-rose-600' : ''}>
                         {totals.dailyEur >= 0 ? '+' : ''}
                         {money(totals.dailyEur, 'EUR')}
@@ -564,7 +585,7 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
                           ? `${totals.dailyPct >= 0 ? '+' : ''}${totals.dailyPct.toFixed(2)}%`
                           : '—'}
                       </div>
-                    </>
+                    </PrivacyGate>
                   ) : (
                     <span className="text-slate-400">—</span>
                   )}
@@ -582,7 +603,11 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
               Total <span className="font-normal text-slate-400">({filtered.length} shown)</span>
             </span>
             <span className="text-right">
-              <div className="font-semibold text-slate-900 tabular-nums">{money(totals.value, 'EUR')}</div>
+              <div className="font-semibold text-slate-900 tabular-nums">
+                <PrivacyGate fallback="—">
+                  <>{money(totals.value, 'EUR')}</>
+                </PrivacyGate>
+              </div>
               <div
                 className="text-xs text-slate-500 tabular-nums"
                 title={
@@ -590,21 +615,27 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
                   'Weighted YTD for visible rows with reliable start valuation. Excludes rows shown as unavailable.'
                 }
               >
-                P/L {money(totals.pl, 'EUR')}
+                <PrivacyGate fallback="P/L —">
+                  <>P/L {money(totals.pl, 'EUR')}</>
+                </PrivacyGate>
                 {' · '}
                 Computable Position YTD{' '}
-                {totals.ytdReturnPercent !== null
-                  ? `${totals.ytdReturnPercent >= 0 ? '+' : ''}${totals.ytdReturnPercent.toFixed(1)}%`
-                  : totals.ytdGrowthEur !== null
-                    ? `— (${totals.ytdGrowthEur >= 0 ? '+' : ''}${money(totals.ytdGrowthEur, 'EUR')})`
-                    : '—'}
+                {totals.ytdReturnPercent !== null ? (
+                  `${totals.ytdReturnPercent >= 0 ? '+' : ''}${totals.ytdReturnPercent.toFixed(1)}%`
+                ) : totals.ytdGrowthEur !== null ? (
+                  <PrivacyGate fallback="—">
+                    <>— ({totals.ytdGrowthEur >= 0 ? '+' : ''}{money(totals.ytdGrowthEur, 'EUR')})</>
+                  </PrivacyGate>
+                ) : (
+                  '—'
+                )}
               </div>
             </span>
           </div>
 
           {/* Mobile cards */}
           <ul className="md:hidden divide-y divide-slate-100">
-            {filtered.map(({ inv, m, dailyChangeEur, dailyChangePct, ytd }) => {
+            {filtered.map(({ inv, m, portfolioWeight, dailyChangeEur, dailyChangePct, ytd }) => {
               const isCashLike = isCashLikeInvestment(inv)
               const showPL = !isCashLike && m.totalEverInvested > 0
               const plTone =
@@ -638,7 +669,7 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
                         )}
                       </div>
                       <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
-                        <span>{inv.type}</span>
+                        <span>{categoryLabel(inv.type)}</span>
                         <span>·</span>
                         <span>{inv.platform}</span>
                         <span>·</span>
@@ -647,7 +678,9 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
                     </div>
                     <div className="text-right shrink-0">
                       <div className="text-sm text-slate-900 tabular-nums">
-                        {money(m.currentValue, 'EUR')}
+                        <PrivacyGate fallback={portfolioWeight !== null ? `${pct(portfolioWeight)} weight` : '—'}>
+                          <>{money(m.currentValue, 'EUR')}</>
+                        </PrivacyGate>
                       </div>
                       <div className={`text-xs tabular-nums ${isCashLike ? 'text-slate-400' : plTone}`}>
                         {isCashLike
@@ -672,22 +705,36 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
                           title={ytd.ytdReturnPercent === null ? (ytd.percentUnavailableReason ?? undefined) : undefined}
                         >
                           YTD{' '}
-                          {ytd.ytdReturnPercent !== null
-                            ? `${ytd.ytdReturnPercent >= 0 ? '+' : ''}${ytd.ytdReturnPercent.toFixed(1)}%`
-                            : `— (${ytd.ytdGrowthEur >= 0 ? '+' : ''}${money(ytd.ytdGrowthEur, 'EUR')})`}
+                          {ytd.ytdReturnPercent !== null ? (
+                            `${ytd.ytdReturnPercent >= 0 ? '+' : ''}${ytd.ytdReturnPercent.toFixed(1)}%`
+                          ) : (
+                            <PrivacyGate fallback="—">
+                              <>— ({ytd.ytdGrowthEur >= 0 ? '+' : ''}{money(ytd.ytdGrowthEur, 'EUR')})</>
+                            </PrivacyGate>
+                          )}
                         </div>
                       )}
                       {dailyChangeEur !== null && (
                         <div className={`text-xs tabular-nums ${dailyTone}`}>
-                          {dailyChangeEur >= 0 ? '+' : ''}
-                          {money(dailyChangeEur, 'EUR')}
-                          {dailyChangePct !== null && (
+                          <PrivacyGate
+                            fallback={
+                              dailyChangePct !== null
+                                ? `${dailyChangePct >= 0 ? '+' : ''}${dailyChangePct.toFixed(2)}%`
+                                : '—'
+                            }
+                          >
                             <>
-                              {' '}
-                              ({dailyChangePct >= 0 ? '+' : ''}
-                              {dailyChangePct.toFixed(2)}%)
+                              {dailyChangeEur >= 0 ? '+' : ''}
+                              {money(dailyChangeEur, 'EUR')}
+                              {dailyChangePct !== null && (
+                                <>
+                                  {' '}
+                                  ({dailyChangePct >= 0 ? '+' : ''}
+                                  {dailyChangePct.toFixed(2)}%)
+                                </>
+                              )}
                             </>
-                          )}
+                          </PrivacyGate>
                         </div>
                       )}
                     </div>

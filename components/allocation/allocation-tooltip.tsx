@@ -1,5 +1,8 @@
+'use client'
+
 import { money } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
+import { PrivacyGate } from '@/components/ui/privacy-value'
 
 export type AllocationTooltipPayload = {
   name: string
@@ -27,9 +30,11 @@ export function AllocationTooltip({
   return (
     <div className="min-w-[200px] max-w-[240px] rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg">
       <p className="text-sm font-medium text-slate-700 truncate">{name}</p>
-      <p className="mt-1 text-base font-semibold text-slate-900 tabular-nums leading-tight">
-        {money(value, 'EUR')}
-      </p>
+      <PrivacyGate>
+        <p className="mt-1 text-base font-semibold text-slate-900 tabular-nums leading-tight">
+          {money(value, 'EUR')}
+        </p>
+      </PrivacyGate>
       <div className="mt-1.5 space-y-1 text-xs leading-snug text-slate-500">
         <p className="whitespace-nowrap tabular-nums">
           {pct(contextPct)} of {contextLabel}

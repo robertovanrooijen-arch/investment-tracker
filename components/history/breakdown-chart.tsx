@@ -13,6 +13,7 @@ import {
 import { money } from '@/lib/format'
 import { getChartTicks, getTickFormatter } from '@/lib/domain/chart-ticks'
 import { downsampleForPreset, cutoffDateIso } from '@/lib/domain/chart-series'
+import { useAccountPrivacy } from '@/lib/privacy/privacy-context'
 import type { Preset } from '@/lib/domain/chart-series'
 
 // ── Public types ───────────────────────────────────────────────────────────
@@ -149,6 +150,11 @@ export function BreakdownChart({
   const [visibleEntities, setVisibleEntities] = useState<Set<string>>(
     () => new Set(entities.slice(0, defaultVisibleCount).map((e) => e.id)),
   )
+  const { hidden: privacyHidden } = useAccountPrivacy()
+  // Same reasoning as PortfolioHistoryChart: lock to the %-based metric
+  // while hidden, rather than just reformatting the same absolute values —
+  // "P&L %" never plots or labels an absolute euro figure.
+  const effectiveMetricMode: MetricMode = privacyHidden ? 'pl_pct' : metricMode
 
   function toggleEntity(id: string) {
     setVisibleEntities((prev) => {
@@ -198,11 +204,11 @@ export function BreakdownChart({
       const row: Record<string, string | number> = { date }
       for (const entity of entities) {
         const snap = entityMap.get(entity.id)
-        row[entity.id] = snap != null ? getMetricValue(snap, metricMode) : 0
+        row[entity.id] = snap != null ? getMetricValue(snap, effectiveMetricMode) : 0
       }
       return row
     })
-  }, [filtered, sampledDates, entities, metricMode])
+  }, [filtered, sampledDates, entities, effectiveMetricMode])
 
   const chartDates = useMemo(() => chartData.map((d) => d.date as string), [chartData])
   const chartTicks = useMemo(() => getChartTicks(chartDates), [chartDates])
@@ -212,11 +218,11 @@ export function BreakdownChart({
     (props: object) => (
       <BreakdownTooltip
         {...(props as { active?: boolean; payload?: TooltipPayloadEntry[]; label?: string })}
-        metricMode={metricMode}
+        metricMode={effectiveMetricMode}
         colorMap={colorMap}
       />
     ),
-    [metricMode, colorMap],
+    [effectiveMetricMode, colorMap],
   )
 
   if (snapshots.length === 0) {
@@ -260,14 +266,18 @@ export function BreakdownChart({
 
       {/* Metric toggle + entity pills */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 shrink-0">
+        <div
+          className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 shrink-0"
+          title={privacyHidden ? 'Locked to P&L % while account details are hidden' : undefined}
+        >
           {METRIC_MODES.map((m) => (
             <button
               key={m.key}
               type="button"
               onClick={() => setMetricMode(m.key)}
-              className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-                metricMode === m.key
+              disabled={privacyHidden}
+              className={`rounded-md px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                effectiveMetricMode === m.key
                   ? 'bg-white text-slate-900 shadow-sm'
                   : 'text-slate-500 hover:text-slate-700'
               }`}
@@ -319,7 +329,7 @@ export function BreakdownChart({
                 stroke="#cbd5e1"
               />
               <YAxis
-                tickFormatter={(v) => fmtYAxis(typeof v === 'number' ? v : Number(v), metricMode)}
+                tickFormatter={(v) => fmtYAxis(typeof v === 'number' ? v : Number(v), effectiveMetricMode)}
                 tick={{ fontSize: 12, fill: '#64748b' }}
                 stroke="#cbd5e1"
                 width={90}

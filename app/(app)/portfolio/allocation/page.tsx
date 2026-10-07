@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/page-header'
 import { StatCard } from '@/components/ui/stat-card'
 import { AllocationPageClient } from '@/components/allocation/allocation-page-client'
-import { money } from '@/lib/format'
+import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import { pct } from '@/lib/domain/calculations'
 import { buildPortfolioAllocation, categorySlug } from '@/lib/domain/allocation'
 import { loadFxRates } from '@/lib/domain/fx'
@@ -67,15 +67,28 @@ export default async function AssetAllocationPage({
       ) : (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <StatCard label="Total portfolio value" value={money(allocation.totalValue, 'EUR')} />
+            <StatCard
+              label="Total portfolio value"
+              value={<PrivacyMoney value={allocation.totalValue} fallbackText="—" />}
+            />
             <StatCard label="Holdings" value={String(allocation.holdings.length)} />
             <StatCard
               label="Largest position"
-              value={largestHolding ? money(largestHolding.value, 'EUR') : '—'}
+              value={
+                largestHolding ? (
+                  <PrivacyMoney value={largestHolding.value} fallbackText={largestHolding.name} />
+                ) : (
+                  '—'
+                )
+              }
               hint={
-                largestHolding
-                  ? `${largestHolding.name} · ${pct(largestHolding.portfolioPct)} of portfolio`
-                  : undefined
+                largestHolding ? (
+                  <PrivacyGate fallback={<>{pct(largestHolding.portfolioPct)} of portfolio</>}>
+                    <>
+                      {largestHolding.name} · {pct(largestHolding.portfolioPct)} of portfolio
+                    </>
+                  </PrivacyGate>
+                ) : undefined
               }
             />
             <StatCard

@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { money } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
+import { PrivacyGate } from '@/components/ui/privacy-value'
 import type { PortfolioAllocation } from '@/lib/domain/allocation'
 import { AllocationDonutChart } from './allocation-donut-chart'
 import type { DonutItem } from './allocation-donut-chart'
@@ -65,7 +66,9 @@ export function AllocationOverview({ allocation }: { allocation: PortfolioAlloca
       <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-sm">
         <span className="text-slate-500">Total</span>
         <span className="font-semibold text-slate-900 tabular-nums">
-          {money(allocation.totalValue)} · {pct(1)}
+          <PrivacyGate fallback={pct(1)}>
+            <>{money(allocation.totalValue)} · {pct(1)}</>
+          </PrivacyGate>
         </span>
       </div>
     </div>

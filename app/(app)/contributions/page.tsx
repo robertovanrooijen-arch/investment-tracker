@@ -6,6 +6,7 @@ import { StatCard } from '@/components/ui/stat-card'
 import { money, fmtDate } from '@/lib/format'
 import type { CapitalFlowEntry } from '@/types/database'
 import { txToContribRow, getMonthKey, type ContribRow } from '@/lib/domain/contributions'
+import { PrivacyGate } from '@/components/ui/privacy-value'
 
 export const dynamic = 'force-dynamic'
 
@@ -182,19 +183,19 @@ export default async function ContributionsPage({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
           label="Gross cash in"
-          value={money(grossIn, 'EUR')}
+          value={<PrivacyGate fallback="—"><>{money(grossIn, 'EUR')}</></PrivacyGate>}
           hint={`${inflows.length} inflow${inflows.length !== 1 ? 's' : ''}`}
           tone="positive"
         />
         <StatCard
           label="Cash out"
-          value={totalOut > 0 ? money(totalOut, 'EUR') : '—'}
+          value={<PrivacyGate fallback="—"><>{totalOut > 0 ? money(totalOut, 'EUR') : '—'}</></PrivacyGate>}
           hint={`${outflows.length} outflow${outflows.length !== 1 ? 's' : ''}`}
           tone={totalOut > 0 ? 'negative' : 'neutral'}
         />
         <StatCard
           label="Net contributed"
-          value={money(netContrib, 'EUR')}
+          value={<PrivacyGate fallback="—"><>{money(netContrib, 'EUR')}</></PrivacyGate>}
           hint="Gross in minus cash out"
           tone={netContrib > 0 ? 'positive' : netContrib < 0 ? 'negative' : 'neutral'}
         />
@@ -247,13 +248,13 @@ export default async function ContributionsPage({
                         {row.name}
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums text-emerald-700">
-                        {row.toP > 0 ? money(row.toP, 'EUR') : '—'}
+                        <PrivacyGate fallback="—"><>{row.toP > 0 ? money(row.toP, 'EUR') : '—'}</></PrivacyGate>
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums text-rose-700">
-                        {row.fromP > 0 ? money(row.fromP, 'EUR') : '—'}
+                        <PrivacyGate fallback="—"><>{row.fromP > 0 ? money(row.fromP, 'EUR') : '—'}</></PrivacyGate>
                       </td>
                       <td className={`px-5 md:px-6 py-3 text-right tabular-nums font-semibold ${tdNet(row.net)}`}>
-                        {(row.net >= 0 ? '+' : '') + money(row.net, 'EUR')}
+                        <PrivacyGate fallback="—"><>{(row.net >= 0 ? '+' : '') + money(row.net, 'EUR')}</></PrivacyGate>
                       </td>
                     </tr>
                   ))}
@@ -264,13 +265,13 @@ export default async function ContributionsPage({
                       Total
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums font-semibold text-emerald-700">
-                      {money(grossIn, 'EUR')}
+                      <PrivacyGate fallback="—"><>{money(grossIn, 'EUR')}</></PrivacyGate>
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums font-semibold text-rose-700">
-                      {totalOut > 0 ? money(totalOut, 'EUR') : '—'}
+                      <PrivacyGate fallback="—"><>{totalOut > 0 ? money(totalOut, 'EUR') : '—'}</></PrivacyGate>
                     </td>
                     <td className={`px-5 md:px-6 py-3 text-right tabular-nums font-semibold ${tdNet(netContrib)}`}>
-                      {(netContrib >= 0 ? '+' : '') + money(netContrib, 'EUR')}
+                      <PrivacyGate fallback="—"><>{(netContrib >= 0 ? '+' : '') + money(netContrib, 'EUR')}</></PrivacyGate>
                     </td>
                   </tr>
                 </tfoot>
@@ -306,15 +307,15 @@ export default async function ContributionsPage({
                           {row.month} {year}
                         </td>
                         <td className="px-4 py-3 text-right tabular-nums text-emerald-700">
-                          {row.toP > 0 ? money(row.toP, 'EUR') : '—'}
+                          <PrivacyGate fallback="—"><>{row.toP > 0 ? money(row.toP, 'EUR') : '—'}</></PrivacyGate>
                         </td>
                         <td className="px-4 py-3 text-right tabular-nums text-rose-700">
-                          {row.fromP > 0 ? money(row.fromP, 'EUR') : '—'}
+                          <PrivacyGate fallback="—"><>{row.fromP > 0 ? money(row.fromP, 'EUR') : '—'}</></PrivacyGate>
                         </td>
                         <td className={`px-5 md:px-6 py-3 text-right tabular-nums font-medium ${
                           isEmpty ? 'text-slate-400' : tdNet(net)
                         }`}>
-                          {isEmpty ? '—' : (net >= 0 ? '+' : '') + money(net, 'EUR')}
+                          <PrivacyGate fallback="—"><>{isEmpty ? '—' : (net >= 0 ? '+' : '') + money(net, 'EUR')}</></PrivacyGate>
                         </td>
                       </tr>
                     )
@@ -360,7 +361,9 @@ export default async function ContributionsPage({
                         <td className={`px-4 py-3 text-right tabular-nums font-medium whitespace-nowrap ${
                           isIn ? 'text-emerald-700' : 'text-rose-700'
                         }`}>
-                          {isIn ? '+' : '−'}{money(Number(e.amount_eur), 'EUR')}
+                          <PrivacyGate fallback="—">
+                            <>{isIn ? '+' : '−'}{money(Number(e.amount_eur), 'EUR')}</>
+                          </PrivacyGate>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap hidden sm:table-cell">
                           <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${sourceBadgeClass(e)}`}>

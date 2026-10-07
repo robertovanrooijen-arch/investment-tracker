@@ -12,6 +12,8 @@ export type IconName =
   | 'contributions'
   | 'calendar'
   | 'ytd'
+  | 'eye'
+  | 'eye-off'
 
 const paths: Record<IconName, ReactNode> = {
   dashboard: (
@@ -82,6 +84,21 @@ const paths: Record<IconName, ReactNode> = {
       <rect x="4" y="14" width="4" height="7" rx="1" />
       <rect x="10" y="9" width="4" height="12" rx="1" />
       <rect x="16" y="4" width="4" height="17" rx="1" />
+    </>
+  ),
+  eye: (
+    <>
+      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  'eye-off': (
+    <>
+      <path d="M1 12s4-7 11-7a10.6 10.6 0 0 1 4.24.87" />
+      <path d="M21.82 15.1A10.8 10.8 0 0 0 23 12s-4-7-11-7" />
+      <path d="M17.94 17.94A10.6 10.6 0 0 1 12 19c-7 0-11-7-11-7a16.9 16.9 0 0 1 4.06-4.94" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.24 4.24" />
+      <path d="M1 1l22 22" />
     </>
   ),
 }

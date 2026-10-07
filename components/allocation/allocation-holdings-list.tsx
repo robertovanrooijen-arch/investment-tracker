@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { money } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
+import { PrivacyGate } from '@/components/ui/privacy-value'
 
 export type HoldingListItem = {
   key: string
@@ -183,7 +184,9 @@ function HoldingTr({
       {showCategoryColumn && (
         <td className="py-2.5 pr-2 text-slate-500">{item.category ?? '—'}</td>
       )}
-      <td className="py-2.5 text-right tabular-nums text-slate-900">{money(item.value)}</td>
+      <td className="py-2.5 text-right tabular-nums text-slate-900">
+        <PrivacyGate fallback="—"><>{money(item.value)}</></PrivacyGate>
+      </td>
       <td className="py-2.5 text-right tabular-nums text-slate-500">
         {pctValue !== undefined ? pct(pctValue) : '—'}
       </td>
@@ -247,7 +250,9 @@ function HoldingLi({
       <div className="flex items-center justify-between gap-3">
         <NameCell item={item} />
         <span className="shrink-0 tabular-nums text-sm font-medium text-slate-900">
-          {money(item.value)}
+          <PrivacyGate fallback="—">
+            <>{money(item.value)}</>
+          </PrivacyGate>
         </span>
       </div>
       <div className="mt-0.5 tabular-nums text-xs text-slate-500">

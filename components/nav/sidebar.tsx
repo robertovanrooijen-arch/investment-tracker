@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 import { Icon } from '@/components/ui/icon'
 import { NAV_ITEMS } from './nav-items'
 import { SignOutButton } from './sign-out-button'
+import { AccountPrivacyToggle } from './account-privacy-toggle'
 
 export function Sidebar({ userEmail }: { userEmail: string }) {
   const pathname = usePathname()
@@ -14,14 +15,17 @@ export function Sidebar({ userEmail }: { userEmail: string }) {
 
   return (
     <aside className="hidden md:flex fixed inset-y-0 left-0 w-64 bg-white border-r border-slate-200 flex-col px-4 py-6 z-20">
-      <div className="flex items-center gap-2.5 px-2 mb-8">
-        <div className="w-9 h-9 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold">
-          I
+      <div className="flex items-center justify-between gap-2.5 px-2 mb-8">
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold">
+            I
+          </div>
+          <div>
+            <div className="font-semibold text-slate-900 leading-tight">Investie</div>
+            <div className="text-xs text-slate-500">Portfolio</div>
+          </div>
         </div>
-        <div>
-          <div className="font-semibold text-slate-900 leading-tight">Investie</div>
-          <div className="text-xs text-slate-500">Portfolio</div>
-        </div>
+        <AccountPrivacyToggle />
       </div>
 
       <nav className="flex flex-col gap-1">

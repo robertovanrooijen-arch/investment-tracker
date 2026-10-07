@@ -19,6 +19,7 @@ import {
   getAvailableYears,
 } from '@/lib/domain/year-analysis'
 import type { CapitalFlowEntryForYear, InvestmentSnapshotForYtd } from '@/lib/domain/year-analysis'
+import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import type { Investment, Transaction, InvestmentType } from '@/types/database'
 
 type RawPortfolioSnapshot = {
@@ -226,27 +227,37 @@ export default async function YtdPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           label="Portfolio value"
-          value={money(liveMetrics.totalValue, 'EUR')}
+          value={<PrivacyMoney value={liveMetrics.totalValue} fallbackText="—" />}
           hint="Current live value, EUR"
         />
         <StatCard
           label="YTD return"
-          value={fmtSignedMoney(summary.growthExcludingContributionsEur)}
+          value={
+            <PrivacyMoney
+              value={summary.growthExcludingContributionsEur}
+              signed
+              fallbackText={fmtPercent(summary.modifiedDietzReturnPercent)}
+            />
+          }
           hint={
-            summary.modifiedDietzReturnPercent !== null
-              ? `${fmtPercent(summary.modifiedDietzReturnPercent)} · Modified Dietz`
-              : 'No reliable start-of-year value yet'
+            summary.modifiedDietzReturnPercent !== null ? (
+              <PrivacyGate fallback="Modified Dietz">
+                <>{fmtPercent(summary.modifiedDietzReturnPercent)} · Modified Dietz</>
+              </PrivacyGate>
+            ) : (
+              'No reliable start-of-year value yet'
+            )
           }
           tone={tone(summary.growthExcludingContributionsEur)}
         />
         <StatCard
           label="Net contributions YTD"
-          value={fmtSignedMoney(summary.netContributionsEur)}
+          value={<PrivacyMoney value={summary.netContributionsEur} signed fallbackText="—" />}
           hint="Deposits minus withdrawals since Jan 1"
         />
         <StatCard
           label="Start-of-year value"
-          value={displayStartValueEur !== null ? money(displayStartValueEur, 'EUR') : '—'}
+          value={<PrivacyMoney value={displayStartValueEur} fallbackText="—" />}
           hint={
             summary.startValueEur !== null
               ? `As of ${summary.startValueDate}`

@@ -11,6 +11,8 @@ import {
 } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
 import { money } from '@/lib/format'
+import { categoryLabel } from '@/lib/domain/allocation'
+import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import type { Investment, Transaction, InvestmentType } from '@/types/database'
 import type { LivePoint } from '@/components/history/portfolio-history-chart'
 
@@ -22,17 +24,6 @@ const PALETTE = [
   '#f97316', '#06b6d4', '#ec4899', '#84cc16', '#6366f1',
   '#14b8a6', '#a78bfa',
 ]
-
-// Semantic labels and colors for investment types — mirrors the overview chart
-const TYPE_LABELS: Record<string, string> = {
-  stock:         'Stocks',
-  ETF:           'ETFs',
-  crypto:        'Crypto',
-  cash:          'Cash',
-  'real estate': 'Real Estate',
-  commodity:     'Commodities',
-  custom:        'Custom',
-}
 
 const TYPE_COLORS: Record<string, string> = {
   stock:         '#3b82f6',
@@ -280,7 +271,7 @@ export default async function HistoryPage() {
 
   const typeEntities: BreakdownEntity[] = sortedTypes.map(([type]) => ({
     id: type,
-    label: TYPE_LABELS[type] ?? type,
+    label: categoryLabel(type as InvestmentType),
     color: TYPE_COLORS[type] ?? '#9ca3af',
   }))
 
@@ -348,21 +339,32 @@ export default async function HistoryPage() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <StatCard
               label="Portfolio value"
-              value={money(liveMetrics.totalValue, 'EUR')}
+              value={<PrivacyMoney value={liveMetrics.totalValue} fallbackText="—" />}
               hint="Current live value in EUR"
             />
             <StatCard
               label="Total invested"
-              value={money(liveMetrics.totalInvested, 'EUR')}
+              value={<PrivacyMoney value={liveMetrics.totalInvested} fallbackText="—" />}
               hint="Cost basis in EUR"
             />
             <StatCard
               label="Profit / loss"
-              value={money(liveMetrics.totalProfit, 'EUR')}
+              value={
+                <PrivacyMoney
+                  value={liveMetrics.totalProfit}
+                  signed
+                  fallbackText={liveMetrics.totalProfitPct !== null ? pct(liveMetrics.totalProfitPct) : '—'}
+                />
+              }
               hint={
-                liveMetrics.totalEverInvested > 0
-                  ? `${pct(liveMetrics.totalProfitPct)} · ${money(liveMetrics.totalRealized, 'EUR')} realized · ${money(liveMetrics.totalUnrealized, 'EUR')} unrealized`
-                  : undefined
+                liveMetrics.totalEverInvested > 0 ? (
+                  <PrivacyGate>
+                    <>
+                      {pct(liveMetrics.totalProfitPct)} · {money(liveMetrics.totalRealized, 'EUR')} realized ·{' '}
+                      {money(liveMetrics.totalUnrealized, 'EUR')} unrealized
+                    </>
+                  </PrivacyGate>
+                ) : undefined
               }
               tone={profitTone}
             />

@@ -5,6 +5,7 @@ import { StatCard } from '@/components/ui/stat-card'
 import { money } from '@/lib/format'
 import { loadFxRates } from '@/lib/domain/fx'
 import { computePortfolioMetrics } from '@/lib/domain/calculations'
+import { categoryLabel } from '@/lib/domain/allocation'
 import {
   getAvailableYears,
   computeAssetYearRows,
@@ -33,16 +34,6 @@ import {
 import type { Investment, Transaction } from '@/types/database'
 
 export const dynamic = 'force-dynamic'
-
-const TYPE_LABELS: Record<string, string> = {
-  stock: 'Stock',
-  ETF: 'ETF',
-  crypto: 'Crypto',
-  cash: 'Cash',
-  'real estate': 'Real Estate',
-  commodity: 'Commodity',
-  custom: 'Custom',
-}
 
 function plClass(n: number | null): string {
   if (n === null) return 'text-slate-400'
@@ -447,7 +438,7 @@ export default async function YearAnalysisPage({
                   {classSummaries.map((c) => (
                     <tr key={c.type} className="hover:bg-slate-50 transition-colors">
                       <td className="px-4 py-3.5 whitespace-nowrap font-medium text-slate-800">
-                        {TYPE_LABELS[c.type] ?? c.type}
+                        {categoryLabel(c.type)}
                         {c.isCashClass && (
                           <span className="ml-2 inline-flex items-center rounded-full bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700 border border-sky-200">
                             Cash
@@ -553,7 +544,7 @@ export default async function YearAnalysisPage({
                       <td className="px-4 py-3.5 whitespace-nowrap text-slate-700">{row.platform}</td>
                       <td className="px-4 py-3.5 whitespace-nowrap">
                         <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
-                          {TYPE_LABELS[row.type] ?? row.type}
+                          {categoryLabel(row.type)}
                         </span>
                       </td>
                       <td className="px-4 py-3.5 text-right tabular-nums whitespace-nowrap text-slate-500">

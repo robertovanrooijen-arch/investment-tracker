@@ -343,12 +343,19 @@ export function computePortfolioMetrics(
     // the portfolio. They're excluded from realized/unrealized P/L: a cash
     // balance with no matching deposit/withdraw transactions has no cost
     // basis, so currentValue - 0 is not profit, it's just the balance.
+    //
+    // totalEverInvested is excluded here too — it's the denominator of
+    // totalProfitPct below, and that numerator (totalProfit) already
+    // excludes cash. Including cash's deposit/withdrawal history only in
+    // the denominator silently understated the real cost-basis return,
+    // since a cash account's own totalEverInvested can be large (every
+    // historical deposit/withdrawal) while contributing zero profit.
     totalValue += m.currentValue
     totalInvested += m.remainingCostBasis
-    totalEverInvested += m.totalEverInvested
     if (!isCashLikeInvestment(inv)) {
       totalRealized += m.realizedProfit
       totalUnrealized += m.unrealizedProfit
+      totalEverInvested += m.totalEverInvested
     }
   }
 
@@ -404,6 +411,57 @@ export function computeAllocation(
 
   slices.sort((a, b) => b.value - a.value)
   return slices
+}
+
+// ---------- Performance by category (all-time, since inception) ----------
+
+export type CategoryPerformance = {
+  key: string
+  totalProfit: number
+  totalEverInvested: number
+  totalProfitPct: number | null
+}
+
+/**
+ * All-time (since-inception) P/L grouped by an arbitrary key — same
+ * cash-exclusion rule as computePortfolioMetrics (a cash balance has no cost
+ * basis, so it never contributes fake profit/loss), and the same
+ * computeInvestmentMetrics values the Dashboard's totals come from. This is
+ * deliberately NOT the same metric as a year-scoped AssetClassYtd row (see
+ * lib/domain/year-analysis.ts) — this is "since inception", that is
+ * "selected calendar year" — both are legitimate, different questions.
+ */
+export function computePerformanceByCategory(
+  investments: Investment[],
+  transactions: Transaction[],
+  keyFn: (inv: Investment) => string,
+  fxRates?: FxRates
+): CategoryPerformance[] {
+  const buckets = new Map<string, { totalProfit: number; totalEverInvested: number }>()
+
+  for (const inv of investments) {
+    if (isCashLikeInvestment(inv)) continue
+    const m = computeInvestmentMetrics(inv, transactions, fxRates)
+
+    const k = keyFn(inv)
+    const bucket = buckets.get(k) ?? { totalProfit: 0, totalEverInvested: 0 }
+    bucket.totalProfit += m.totalProfit
+    bucket.totalEverInvested += m.totalEverInvested
+    buckets.set(k, bucket)
+  }
+
+  const rows: CategoryPerformance[] = []
+  for (const [key, b] of buckets) {
+    rows.push({
+      key,
+      totalProfit: b.totalProfit,
+      totalEverInvested: b.totalEverInvested,
+      totalProfitPct: b.totalEverInvested > 0 ? b.totalProfit / b.totalEverInvested : null,
+    })
+  }
+
+  rows.sort((a, b) => b.totalProfit - a.totalProfit)
+  return rows
 }
 
 // ---------- Form validation helper ----------

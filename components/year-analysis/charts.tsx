@@ -17,6 +17,7 @@ import {
   LabelList,
 } from 'recharts'
 import { money } from '@/lib/format'
+import { categoryLabel } from '@/lib/domain/allocation'
 import type {
   BridgeStep,
   AssetClassSummary,
@@ -75,15 +76,6 @@ const TYPE_COLORS: Record<string, string> = {
   custom: '#6b7280',
 }
 
-const TYPE_LABELS: Record<string, string> = {
-  stock: 'Stock',
-  ETF: 'ETF',
-  crypto: 'Crypto',
-  cash: 'Cash',
-  'real estate': 'Real Estate',
-  commodity: 'Commodity',
-  custom: 'Custom',
-}
 
 function fmtSigned(n: number): string {
   return `${n >= 0 ? '+' : ''}${money(n, 'EUR')}`
@@ -200,7 +192,7 @@ export function AssetClassAllocationChart({ classSummaries }: { classSummaries: 
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
-              data={classSummaries.map((c) => ({ ...c, name: TYPE_LABELS[c.type] ?? c.type }))}
+              data={classSummaries.map((c) => ({ ...c, name: categoryLabel(c.type) }))}
               cx="50%"
               cy="50%"
               innerRadius={56}
@@ -225,7 +217,7 @@ export function AssetClassAllocationChart({ classSummaries }: { classSummaries: 
                 style={{ backgroundColor: TYPE_COLORS[c.type] ?? '#9ca3af' }}
               />
               <span className="truncate text-slate-700 font-medium">
-                {TYPE_LABELS[c.type] ?? c.type}
+                {categoryLabel(c.type)}
                 {c.isCashClass && <span className="ml-1.5 text-xs font-semibold text-sky-600">Cash</span>}
               </span>
             </div>
@@ -261,7 +253,7 @@ function ClassPnlTooltip({ active, payload }: { active?: boolean; payload?: { pa
 export function AssetClassPnlChart({ classSummaries }: { classSummaries: AssetClassSummary[] }) {
   const rows: ClassPnlRow[] = classSummaries
     .filter((c) => !c.isCashClass && c.totalPLEur !== null)
-    .map((c) => ({ ...c, label: TYPE_LABELS[c.type] ?? c.type }))
+    .map((c) => ({ ...c, label: categoryLabel(c.type) }))
     .sort((a, b) => (b.totalPLEur ?? 0) - (a.totalPLEur ?? 0))
 
   if (rows.length === 0) {
@@ -342,7 +334,7 @@ export function AssetClassYtdChart({ classYtd }: { classYtd: AssetClassYtd[] }) 
     .filter((c) => c.growthEur !== null)
     .map((c) => ({
       ...c,
-      label: TYPE_LABELS[c.type] ?? c.type,
+      label: categoryLabel(c.type),
       pctLabel: c.returnPercent !== null ? `${c.returnPercent >= 0 ? '+' : ''}${c.returnPercent.toFixed(1)}%` : '',
     }))
 
@@ -413,7 +405,7 @@ function RankingTooltip({ active, payload }: { active?: boolean; payload?: { pay
     <TooltipBox>
       <p className="font-medium text-slate-700">{row.name}</p>
       <p className="text-slate-500">
-        {row.platform} · {TYPE_LABELS[row.type] ?? row.type}
+        {row.platform} · {categoryLabel(row.type)}
       </p>
       <p className="tabular-nums text-slate-900 font-semibold">{fmtSigned(row.totalPLEur)}</p>
       {row.totalPLPercent !== null && <p className="text-slate-500">{fmtSigned(row.totalPLPercent)}%</p>}

@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { Badge } from '@/components/ui/badge'
 import { money, fmtDate } from '@/lib/format'
 import { txTypeBadgeClass } from '@/lib/domain/transaction-helpers'
+import { PrivacyGate } from '@/components/ui/privacy-value'
 import type { Transaction, InvestmentType } from '@/types/database'
 
 type Row = Transaction & {
@@ -53,7 +54,9 @@ export function RecentTransactions({ transactions }: RecentTransactionsProps) {
                   </div>
                 </div>
                 <div className="text-right shrink-0 text-sm text-slate-900 tabular-nums">
-                  {money(tx.amount)}
+                  <PrivacyGate fallback="—">
+                    <>{money(tx.amount)}</>
+                  </PrivacyGate>
                 </div>
               </Link>
             </li>

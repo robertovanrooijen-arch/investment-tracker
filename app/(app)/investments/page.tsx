@@ -84,8 +84,16 @@ export default async function InvestmentsPage() {
   const ytdRows = computeInvestmentYtdRows(investments, transactions, currentYear, fxRates, ytdSnapshots)
   const ytdByInvestmentId = new Map(ytdRows.map((r) => [r.investmentId, r]))
 
+  // Total portfolio value (unfiltered) — the denominator for each row's
+  // portfolio weight %, which privacy mode shows instead of the raw value.
+  const metricsByInvestmentId = new Map(
+    investments.map((inv) => [inv.id, computeInvestmentMetrics(inv, transactions, fxRates)])
+  )
+  const totalPortfolioValue = [...metricsByInvestmentId.values()].reduce((sum, m) => sum + m.currentValue, 0)
+
   const preparedRows: PreparedRow[] = investments.map((inv) => {
-    const m = computeInvestmentMetrics(inv, transactions, fxRates)
+    const m = metricsByInvestmentId.get(inv.id)!
+    const portfolioWeight = totalPortfolioValue > 0 ? m.currentValue / totalPortfolioValue : null
     const prevSnap = prevSnapMap.get(inv.id) ?? null
 
     let dailyChangeEur: number | null = null
@@ -112,7 +120,7 @@ export default async function InvestmentsPage() {
 
     const ytd = ytdByInvestmentId.get(inv.id) ?? null
 
-    return { inv, m, dailyChangeEur, dailyChangePct, ytd }
+    return { inv, m, portfolioWeight, dailyChangeEur, dailyChangePct, ytd }
   })
 
   return (

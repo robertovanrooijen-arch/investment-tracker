@@ -5,6 +5,7 @@ import { StatCard } from '@/components/ui/stat-card'
 import { PortfolioBreakdownCharts } from '@/components/history/portfolio-breakdown-charts'
 import { RecentTransactions } from '@/components/dashboard/recent-transactions'
 import { RefreshPortfolioButton } from '@/components/dashboard/refresh-portfolio-button'
+import { PrivacyMoney, PrivacyValue, PrivacyGate } from '@/components/ui/privacy-value'
 import { money } from '@/lib/format'
 import {
   computePortfolioMetrics,
@@ -32,6 +33,12 @@ function dailyChangeText(change: DailyChange): string {
       ? ` (${change.percent > 0 ? '+' : ''}${change.percent.toFixed(2)}%)`
       : ''
   return `Today: ${sign}${money(change.value, 'EUR')}${pctText}`
+}
+
+function dailyChangePrivacyText(change: DailyChange): string {
+  if (!change) return 'No previous snapshot yet'
+  if (change.percent === null) return '—'
+  return `Today: ${change.percent > 0 ? '+' : ''}${change.percent.toFixed(2)}%`
 }
 
 function dailyChangeClass(change: DailyChange): string {
@@ -138,31 +145,52 @@ export default async function DashboardPage() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <StatCard
               label="Portfolio value"
-              value={money(metrics.totalValue, 'EUR')}
+              value={<PrivacyMoney value={metrics.totalValue} fallbackText="—" />}
               hint={
                 <>
                   Converted to EUR
                   <br />
                   <span className={dailyChangeClass(dailyChange)}>
-                    {dailyChangeText(dailyChange)}
+                    <PrivacyValue
+                      amount={dailyChangeText(dailyChange)}
+                      privacyFallback={dailyChangePrivacyText(dailyChange)}
+                    />
                   </span>
                 </>
               }
             />
             <StatCard
               label="Total invested"
-              value={money(metrics.totalInvested, 'EUR')}
+              value={<PrivacyMoney value={metrics.totalInvested} fallbackText="—" />}
               hint="Cost basis converted to EUR"
             />
             <StatCard
               label="Profit / loss"
-              value={hasHistory ? money(metrics.totalProfit, 'EUR') : '—'}
+              value={
+                hasHistory ? (
+                  <PrivacyMoney
+                    value={metrics.totalProfit}
+                    signed
+                    fallbackText={
+                      metrics.totalProfitPct !== null
+                        ? `${metrics.totalProfitPct >= 0 ? '+' : ''}${pct(metrics.totalProfitPct)}`
+                        : '—'
+                    }
+                  />
+                ) : (
+                  '—'
+                )
+              }
               hint={
                 hasHistory ? (
                   <>
-                    {metrics.totalProfitPct !== null ? pct(metrics.totalProfitPct) : '—'} ·{' '}
-                    {money(metrics.totalRealized, 'EUR')} realized ·{' '}
-                    {money(metrics.totalUnrealized, 'EUR')} unrealized
+                    <PrivacyGate>
+                      <>
+                        {metrics.totalProfitPct !== null ? pct(metrics.totalProfitPct) : '—'} ·{' '}
+                        {money(metrics.totalRealized, 'EUR')} realized ·{' '}
+                        {money(metrics.totalUnrealized, 'EUR')} unrealized
+                      </>
+                    </PrivacyGate>
                     <br />
                     <span className="text-slate-400">
                       All-time cost-basis P/L since each position was opened. Cash excluded.

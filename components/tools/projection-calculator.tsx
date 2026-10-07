@@ -14,6 +14,7 @@ import {
 } from 'recharts'
 import { money } from '@/lib/format'
 import { computeProjection } from '@/lib/domain/projection'
+import { PrivacyGate, PrivacyMoney } from '@/components/ui/privacy-value'
 import type { ProjectionInput, RecurringFrequency } from '@/lib/domain/projection'
 
 // ── Input helpers ──────────────────────────────────────────────────────────
@@ -134,8 +135,8 @@ function ResultCard({
   tone = 'neutral',
 }: {
   label: string
-  value: string
-  sub?: string
+  value: ReactNode
+  sub?: ReactNode
   tone?: 'positive' | 'negative' | 'neutral'
 }) {
   const valueClass =
@@ -338,19 +339,31 @@ export function ProjectionCalculator({
       <div className={`grid grid-cols-2 gap-3 ${hasTarget ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
         <ResultCard
           label="Final value"
-          value={money(result.finalValue, 'EUR')}
+          value={<PrivacyMoney value={result.finalValue} fallbackText="—" />}
           sub={`After ${parsed.years} year${parsed.years !== 1 ? 's' : ''}`}
         />
         <ResultCard
           label="Capital in"
-          value={money(parsed.startingValue + result.totalContributed, 'EUR')}
-          sub={result.totalContributed > 0
-            ? `${money(result.totalContributed, 'EUR')} contributed`
-            : 'No contributions'}
+          value={<PrivacyMoney value={parsed.startingValue + result.totalContributed} fallbackText="—" />}
+          sub={
+            <PrivacyGate fallback={result.totalContributed > 0 ? 'Includes contributions' : 'No contributions'}>
+              <>
+                {result.totalContributed > 0
+                  ? `${money(result.totalContributed, 'EUR')} contributed`
+                  : 'No contributions'}
+              </>
+            </PrivacyGate>
+          }
         />
         <ResultCard
           label="Investment growth"
-          value={`${growth >= 0 ? '+' : ''}${money(growth, 'EUR')}`}
+          value={
+            <PrivacyMoney
+              value={growth}
+              signed
+              fallbackText={growthPct !== null ? `${growthPct >= 0 ? '+' : ''}${growthPct.toFixed(2)}%` : '—'}
+            />
+          }
           sub={growthPct !== null
             ? `${growthPct >= 0 ? '+' : ''}${growthPct.toFixed(2)}% return on capital`
             : 'Pure returns on top of capital'}
@@ -362,9 +375,15 @@ export function ProjectionCalculator({
             value={result.targetReachedYear !== null
               ? `Year ${result.targetReachedYear}`
               : 'Not reached'}
-            sub={result.targetReachedYear !== null
-              ? `${money(parsed.targetAmount!, 'EUR')} goal reached`
-              : `Goal: ${money(parsed.targetAmount!, 'EUR')}`}
+            sub={
+              <PrivacyGate>
+                <>
+                  {result.targetReachedYear !== null
+                    ? `${money(parsed.targetAmount!, 'EUR')} goal reached`
+                    : `Goal: ${money(parsed.targetAmount!, 'EUR')}`}
+                </>
+              </PrivacyGate>
+            }
             tone={result.targetReachedYear !== null ? 'positive' : 'negative'}
           />
         )}
@@ -506,18 +525,18 @@ export function ProjectionCalculator({
                       )}
                     </td>
                     <td className="px-4 py-3 text-right font-semibold text-slate-900 tabular-nums">
-                      {money(row.portfolioValue, 'EUR')}
+                      <PrivacyGate fallback="—"><>{money(row.portfolioValue, 'EUR')}</></PrivacyGate>
                     </td>
                     <td className="px-4 py-3 text-right text-slate-500 tabular-nums">
-                      {money(row.capitalIn, 'EUR')}
+                      <PrivacyGate fallback="—"><>{money(row.capitalIn, 'EUR')}</></PrivacyGate>
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums hidden sm:table-cell">
                       <span className={row.growth > 0 ? 'text-emerald-700' : row.growth < 0 ? 'text-rose-700' : 'text-slate-500'}>
-                        {row.growth >= 0 ? '+' : ''}{money(row.growth, 'EUR')}
+                        <PrivacyGate fallback="—"><>{row.growth >= 0 ? '+' : ''}{money(row.growth, 'EUR')}</></PrivacyGate>
                       </span>
                     </td>
                     <td className="px-5 md:px-6 py-3 text-right text-slate-400 tabular-nums hidden sm:table-cell">
-                      {row.yearContrib > 0 ? money(row.yearContrib, 'EUR') : '—'}
+                      <PrivacyGate fallback="—"><>{row.yearContrib > 0 ? money(row.yearContrib, 'EUR') : '—'}</></PrivacyGate>
                     </td>
                   </tr>
                 )

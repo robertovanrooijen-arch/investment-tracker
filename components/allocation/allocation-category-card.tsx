@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { money } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
+import { PrivacyGate } from '@/components/ui/privacy-value'
 import { topSlicesWithOther } from '@/lib/domain/allocation'
 import type { AllocationCategory } from '@/lib/domain/allocation'
 import { AllocationDonutChart } from './allocation-donut-chart'
@@ -86,12 +87,16 @@ export function AllocationCategoryCard({ category, highlighted = false }: Props)
           </p>
         </div>
         <div className="text-right shrink-0">
-          <div className="text-lg font-semibold text-slate-900 tabular-nums">
-            {money(category.value)}
-          </div>
-          <div className="text-sm text-slate-500 tabular-nums">
-            {pct(category.portfolioPct)} of portfolio
-          </div>
+          <PrivacyGate fallback={<div className="text-lg font-semibold text-slate-900 tabular-nums">{pct(category.portfolioPct)}</div>}>
+            <div className="text-lg font-semibold text-slate-900 tabular-nums">
+              {money(category.value)}
+            </div>
+          </PrivacyGate>
+          <PrivacyGate>
+            <div className="text-sm text-slate-500 tabular-nums">
+              {pct(category.portfolioPct)} of portfolio
+            </div>
+          </PrivacyGate>
         </div>
       </div>
 

@@ -14,6 +14,8 @@ import {
 import { money } from '@/lib/format'
 import { getChartTicks, getTickFormatter } from '@/lib/domain/chart-ticks'
 import { downsampleForPreset, cutoffDateIso } from '@/lib/domain/chart-series'
+import { categoryLabel } from '@/lib/domain/allocation'
+import { useAccountPrivacy } from '@/lib/privacy/privacy-context'
 import type { Preset } from '@/lib/domain/chart-series'
 import type { InvestmentType } from '@/types/database'
 
@@ -113,15 +115,6 @@ const TYPE_COLORS: Record<string, string> = {
   commodity:      '#d97706',
   'real estate':  '#ef4444',
   custom:         '#6b7280',
-}
-
-const TYPE_LABELS: Record<string, string> = {
-  stock:         'Stocks',
-  ETF:           'ETF',
-  crypto:        'Crypto',
-  commodity:     'Commodity',
-  'real estate': 'Real estate',
-  custom:        'Custom',
 }
 
 // Main series always read from portfolio_snapshots — accuracy guaranteed.
@@ -263,6 +256,13 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
   const [preset,       setPreset]       = useState<Preset>(initialPreset ?? '30d')
   const [viewMode,     setViewMode]     = useState<ViewMode>('absolute')
   const [visibleSeries, setVisibleSeries] = useState<Set<string>>(new Set(DEFAULT_VISIBLE))
+  const { hidden: privacyHidden } = useAccountPrivacy()
+  // While privacy mode is on, force the %-change view regardless of the
+  // user's stored preference — that mode never plots or labels an absolute
+  // euro figure, so switching to it (not just reformatting the same
+  // absolute values) is what actually keeps the chart's shape from leaking
+  // real account values. Reverts automatically once privacy is turned off.
+  const effectiveViewMode: ViewMode = privacyHidden ? 'change_pct' : viewMode
 
   function toggleSeries(key: string) {
     setVisibleSeries((prev) => {
@@ -406,7 +406,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
   // exactly as before. Gaps (null/undefined) are preserved, never coerced
   // to 0, so a Δ€/Δ% view can't turn "no data" into a fabricated number.
   const displayData = useMemo(() => {
-    if (viewMode === 'absolute' || chartDataWithOpening.length === 0) return chartDataWithOpening
+    if (effectiveViewMode === 'absolute' || chartDataWithOpening.length === 0) return chartDataWithOpening
 
     const numericKeys: string[] = [
       ...STATIC_SERIES.map((s) => s.key),
@@ -434,7 +434,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
         }
         const firstVal = firstValueForKey.get(key) ?? 0
         const currVal  = Number(rawVal) || 0
-        if (viewMode === 'change_eur') {
+        if (effectiveViewMode === 'change_eur') {
           out[key] = currVal - firstVal
         } else {
           out[key] = firstVal !== 0 ? ((currVal / firstVal) - 1) * 100 : 0
@@ -442,7 +442,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
       }
       return out
     })
-  }, [chartDataWithOpening, viewMode, activeTypes])
+  }, [chartDataWithOpening, effectiveViewMode, activeTypes])
 
   // X-axis: time-aware tick boundaries snapped to actual data points
   const chartDates = useMemo(
@@ -453,8 +453,8 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
   const tickFmt    = useMemo(() => getTickFormatter(chartDates), [chartDates])
 
   const renderTooltip = useCallback(
-    (props: object) => <ChartTooltip {...(props as { active?: boolean; payload?: TooltipEntry[]; label?: string })} viewMode={viewMode} />,
-    [viewMode],
+    (props: object) => <ChartTooltip {...(props as { active?: boolean; payload?: TooltipEntry[]; label?: string })} viewMode={effectiveViewMode} />,
+    [effectiveViewMode],
   )
 
   // ── Empty / single-point states ────────────────────────────────────────
@@ -481,7 +481,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
         <p className="mt-3 text-sm text-slate-700">
           Latest value:{' '}
           <span className="font-semibold">
-            {money(portfolioSnapshots[0].total_value_eur, 'EUR')}
+            {privacyHidden ? '—' : money(portfolioSnapshots[0].total_value_eur, 'EUR')}
           </span>
         </p>
       </div>
@@ -521,11 +521,19 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
               Portfolio value
             </p>
             <p className="mt-1 text-3xl font-semibold tabular-nums text-slate-900">
-              {endSnap ? money(endSnap.total_value_eur, 'EUR') : '—'}
+              {privacyHidden
+                ? headerPct !== null
+                  ? `${headerPct >= 0 ? '+' : ''}${(headerPct * 100).toFixed(2)}%`
+                  : '—'
+                : endSnap
+                  ? money(endSnap.total_value_eur, 'EUR')
+                  : '—'}
             </p>
             {hasSampled && startSnap && endSnap ? (
               startSnap.date === endSnap.date ? (
                 <p className="mt-2 text-sm text-slate-500">Single snapshot in this timeframe</p>
+              ) : privacyHidden ? (
+                <p className="mt-2 text-sm text-slate-600">Since {fmtLongDate(startSnap.date)}</p>
               ) : (
                 <p className="mt-2 text-sm text-slate-600">
                   From{' '}
@@ -580,15 +588,19 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
         {/* View-mode toggle + series pills */}
         <div className="mb-5 flex flex-wrap items-center gap-3">
 
-          {/* View mode */}
-          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 shrink-0">
+          {/* View mode — locked to "% change" while privacy mode hides account values */}
+          <div
+            className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 shrink-0"
+            title={privacyHidden ? 'Locked to % change while account details are hidden' : undefined}
+          >
             {VIEW_MODES.map((m) => (
               <button
                 key={m.key}
                 type="button"
                 onClick={() => setViewMode(m.key)}
-                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-                  viewMode === m.key
+                disabled={privacyHidden}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  effectiveViewMode === m.key
                     ? 'bg-white text-slate-900 shadow-sm'
                     : 'text-slate-500 hover:text-slate-700'
                 }`}
@@ -643,7 +655,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
                     className="inline-block h-2 w-2 shrink-0 rounded-full"
                     style={{ backgroundColor: visible ? color : '#cbd5e1' }}
                   />
-                  {TYPE_LABELS[type] ?? type}
+                  {categoryLabel(type)}
                 </button>
               )
             })}
@@ -669,7 +681,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
                 <YAxis
                   tickFormatter={(v) => fmtYAxis(
                     typeof v === 'number' ? v : Number(v),
-                    viewMode,
+                    effectiveViewMode,
                   )}
                   tick={{ fontSize: 12, fill: '#64748b' }}
                   stroke="#cbd5e1"
@@ -711,7 +723,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
                       key={type}
                       type="monotone"
                       dataKey={type}
-                      name={TYPE_LABELS[type] ?? type}
+                      name={categoryLabel(type)}
                       stroke={TYPE_COLORS[type] ?? '#9ca3af'}
                       strokeWidth={1.5}
                       dot={false}

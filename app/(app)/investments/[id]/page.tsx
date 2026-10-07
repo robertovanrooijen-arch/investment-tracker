@@ -7,6 +7,7 @@ import { StatCard } from '@/components/ui/stat-card'
 import { ClickableTr } from '@/components/ui/clickable-tr'
 import { RefreshPriceButton } from '@/components/investments/refresh-price-button'
 import { InvestmentDetailChart } from '@/components/investments/investment-detail-chart'
+import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import { money, fmtDate } from '@/lib/format'
 import {
   computeInvestmentMetrics,
@@ -16,6 +17,7 @@ import {
 import { loadFxRates } from '@/lib/domain/fx'
 import { txTypeBadgeClass } from '@/lib/domain/transaction-helpers'
 import { hasUnits } from '@/lib/domain/constants'
+import { categoryLabel } from '@/lib/domain/allocation'
 import { buildInvestmentChartTimeline } from '@/lib/domain/chart-timeline'
 import type { Investment, Transaction } from '@/types/database'
 
@@ -101,8 +103,8 @@ export default async function InvestmentDetailPage({
         title={investment.name}
         subtitle={
           investment.ticker
-            ? `${investment.ticker} · ${investment.type} · ${investment.platform} · ${currency}`
-            : `${investment.type} · ${investment.platform} · ${currency}`
+            ? `${investment.ticker} · ${categoryLabel(investment.type)} · ${investment.platform} · ${currency}`
+            : `${categoryLabel(investment.type)} · ${investment.platform} · ${currency}`
         }
         action={
           <div className="flex flex-wrap items-center gap-2">
@@ -149,14 +151,20 @@ export default async function InvestmentDetailPage({
           <StatCard label="Quantity held" value="0" hint="Fully sold" />
           <StatCard
             label="Realized profit / loss"
-            value={money(m.realizedProfit, 'EUR')}
+            value={
+              <PrivacyMoney
+                value={m.realizedProfit}
+                fallbackText={m.totalProfitPct !== null ? pct(m.totalProfitPct) : '—'}
+              />
+            }
             hint={
-              m.totalProfitPct !== null
-                ? `${pct(m.totalProfitPct)} on ${money(
-                    m.totalEverInvested,
-                    'EUR'
-                  )} invested`
-                : undefined
+              m.totalProfitPct !== null ? (
+                <PrivacyGate>
+                  <>
+                    {pct(m.totalProfitPct)} on {money(m.totalEverInvested, 'EUR')} invested
+                  </>
+                </PrivacyGate>
+              ) : undefined
             }
             tone={profitTone}
           />
@@ -165,31 +173,49 @@ export default async function InvestmentDetailPage({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <StatCard
             label="Current value"
-            value={money(m.currentValue, 'EUR')}
+            value={<PrivacyMoney value={m.currentValue} fallbackText="—" />}
             hint={
-              isForeign
-                ? `≈ ${money(mNative.currentValue, currency)} ${currency}`
-                : undefined
+              isForeign ? (
+                <PrivacyGate>
+                  <>≈ {money(mNative.currentValue, currency)} {currency}</>
+                </PrivacyGate>
+              ) : undefined
             }
           />
           <StatCard
             label="Total invested"
-            value={money(m.remainingCostBasis, 'EUR')}
+            value={<PrivacyMoney value={m.remainingCostBasis} fallbackText="—" />}
             hint={
-              isForeign
-                ? `≈ ${money(mNative.remainingCostBasis, currency)} ${currency}`
-                : isUnit
-                  ? 'Cost basis of shares held'
-                  : undefined
+              isForeign ? (
+                <PrivacyGate>
+                  <>≈ {money(mNative.remainingCostBasis, currency)} {currency}</>
+                </PrivacyGate>
+              ) : isUnit ? (
+                'Cost basis of shares held'
+              ) : undefined
             }
           />
           <StatCard
             label="Profit / loss"
-            value={m.hasActivity ? money(m.totalProfit, 'EUR') : '—'}
+            value={
+              m.hasActivity ? (
+                <PrivacyMoney
+                  value={m.totalProfit}
+                  signed
+                  fallbackText={m.totalProfitPct !== null ? pct(m.totalProfitPct) : '—'}
+                />
+              ) : (
+                '—'
+              )
+            }
             hint={
-              m.hasActivity && m.totalProfitPct !== null
-                ? pct(m.totalProfitPct)
-                : 'Record a buy or deposit to start tracking gains'
+              m.hasActivity && m.totalProfitPct !== null ? (
+                <PrivacyGate>
+                  <>{pct(m.totalProfitPct)}</>
+                </PrivacyGate>
+              ) : !m.hasActivity ? (
+                'Record a buy or deposit to start tracking gains'
+              ) : undefined
             }
             tone={m.hasActivity ? profitTone : 'neutral'}
           />
@@ -223,7 +249,7 @@ export default async function InvestmentDetailPage({
                       : 'text-slate-900'
                 }`}
               >
-                {money(m.realizedProfit, 'EUR')}
+                <PrivacyMoney value={m.realizedProfit} fallbackText="—" />
               </p>
             </div>
             <div>
@@ -239,7 +265,7 @@ export default async function InvestmentDetailPage({
                       : 'text-slate-900'
                 }`}
               >
-                {m.isClosed ? '—' : money(m.unrealizedProfit, 'EUR')}
+                {m.isClosed ? '—' : <PrivacyMoney value={m.unrealizedProfit} fallbackText="—" />}
               </p>
             </div>
           </div>
@@ -257,8 +283,12 @@ export default async function InvestmentDetailPage({
                 Quantity held
               </p>
               <p className="mt-1 text-base text-slate-900 tabular-nums">
-                {mNative.quantity ?? 0}
-                {commodityUnitLabel ? ` ${commodityUnitLabel}` : ''}
+                <PrivacyGate fallback="—">
+                  <>
+                    {mNative.quantity ?? 0}
+                    {commodityUnitLabel ? ` ${commodityUnitLabel}` : ''}
+                  </>
+                </PrivacyGate>
               </p>
             </div>
 
@@ -278,9 +308,13 @@ export default async function InvestmentDetailPage({
                 {commodityUnitFull ? `Avg buy price per ${commodityUnitFull}` : 'Avg buy price'}
               </p>
               <p className="mt-1 text-base text-slate-900 tabular-nums">
-                {mNative.averageBuyPrice !== null
-                  ? money(mNative.averageBuyPrice, currency)
-                  : '—'}
+                <PrivacyGate fallback="—">
+                  <>
+                    {mNative.averageBuyPrice !== null
+                      ? money(mNative.averageBuyPrice, currency)
+                      : '—'}
+                  </>
+                </PrivacyGate>
               </p>
             </div>
 

@@ -5,6 +5,7 @@ import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
 import { fmtDate } from '@/lib/format'
 import { computeNextDueDate } from '@/lib/domain/recurring'
+import { PrivacyGate } from '@/components/ui/privacy-value'
 import type { RecurringTransaction } from '@/types/database'
 
 export const dynamic = 'force-dynamic'
@@ -150,9 +151,13 @@ export default async function RecurringPage() {
                       {describeSchedule(rule)}
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-700">
-                      {rule.fixed_amount !== null
-                        ? `${rule.fixed_amount} ${rule.fixed_amount_currency ?? ''}`
-                        : '—'}
+                      <PrivacyGate fallback="—">
+                        <>
+                          {rule.fixed_amount !== null
+                            ? `${rule.fixed_amount} ${rule.fixed_amount_currency ?? ''}`
+                            : '—'}
+                        </>
+                      </PrivacyGate>
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-700">
                       {isEnded ? '—' : nextDue ? fmtDate(nextDue) : '—'}
@@ -210,7 +215,9 @@ export default async function RecurringPage() {
                           <span>{describeSchedule(rule)}</span>
                         </div>
                         <div className="mt-1 text-xs text-slate-500">
-                          {rule.fixed_amount} {rule.fixed_amount_currency}
+                          <PrivacyGate fallback="—">
+                            <>{rule.fixed_amount} {rule.fixed_amount_currency}</>
+                          </PrivacyGate>
                         </div>
                       </div>
                       <div className="text-right shrink-0">
