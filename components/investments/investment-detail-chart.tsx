@@ -28,18 +28,23 @@ const VIEW_MODES: { key: ViewMode; label: string }[] = [
 
 // ── Presets ────────────────────────────────────────────────────────────────
 
-type Preset = '7d' | '30d' | '90d' | '1y' | 'all'
+type Preset = '7d' | '30d' | '90d' | 'ytd' | '1y' | 'all'
 
 const PRESETS: { key: Preset; label: string }[] = [
   { key: '7d',  label: '7d'  },
   { key: '30d', label: '30d' },
   { key: '90d', label: '90d' },
+  { key: 'ytd', label: 'YTD' },
   { key: '1y',  label: '1y'  },
   { key: 'all', label: 'All' },
 ]
 
-const DAYS_FOR_PRESET: Record<Exclude<Preset, 'all'>, number> = {
+const DAYS_FOR_PRESET: Record<Exclude<Preset, 'all' | 'ytd'>, number> = {
   '7d': 7, '30d': 30, '90d': 90, '1y': 365,
+}
+
+function currentYearStartIso(): string {
+  return `${new Date().getFullYear()}-01-01`
 }
 
 // ── Series ─────────────────────────────────────────────────────────────────
@@ -86,7 +91,7 @@ function todayMinusDaysIso(days: number): string {
 
 function filterByPreset(points: ChartPoint[], preset: Preset): ChartPoint[] {
   if (preset === 'all') return points
-  const cutoff = todayMinusDaysIso(DAYS_FOR_PRESET[preset])
+  const cutoff = preset === 'ytd' ? currentYearStartIso() : todayMinusDaysIso(DAYS_FOR_PRESET[preset])
   return points.filter((p) => p.date >= cutoff)
 }
 
@@ -136,12 +141,16 @@ type DisplayPoint = {
 
 type Props = {
   chartPoints: ChartPoint[]
+  // Defaults to '30d' (unchanged for the existing Investment Detail page).
+  // The Investment Performance page passes 'ytd' so the chart opens already
+  // scoped to the same period as the rest of that page.
+  initialPreset?: Preset
 }
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export function InvestmentDetailChart({ chartPoints }: Props) {
-  const [preset,   setPreset]   = useState<Preset>('30d')
+export function InvestmentDetailChart({ chartPoints, initialPreset }: Props) {
+  const [preset,   setPreset]   = useState<Preset>(initialPreset ?? '30d')
   const [viewMode, setViewMode] = useState<ViewMode>('absolute')
   const [visible,  setVisible]  = useState<Record<LineKey, boolean>>({
     value: true, costBasis: true, unrealizedPL: false,

@@ -51,6 +51,13 @@ function sortChron(txs: Transaction[]): Transaction[] {
  *   5. null         → no usable price
  * Cost basis: walked from transactions (avg-cost method, same as calculations.ts).
  * Nothing is written to the database. Display-only.
+ *
+ * `transactions` is filtered to this investment's own id internally — a
+ * caller that accidentally passes a whole portfolio's transactions (instead
+ * of pre-scoping them) gets a correct single-investment timeline rather
+ * than every other holding's buys replayed into this one's share count and
+ * cost basis (a real bug this guard was added to make impossible, not just
+ * documented).
  */
 export function buildInvestmentChartTimeline(
   investment: Investment,
@@ -61,13 +68,14 @@ export function buildInvestmentChartTimeline(
   fxRates?: FxRates,
 ): ChartPoint[] {
   const isUnit = hasUnits(investment.type)
+  const ownTransactions = transactions.filter((t) => t.investment_id === investment.id)
   const snapshotMap = new Map(snapshots.map((s) => [s.date, s]))
 
   const allDates = [
-    ...new Set([...snapshotMap.keys(), ...transactions.map((t) => t.date), todayIso]),
+    ...new Set([...snapshotMap.keys(), ...ownTransactions.map((t) => t.date), todayIso]),
   ].sort()
 
-  const sortedTxs = sortChron(transactions)
+  const sortedTxs = sortChron(ownTransactions)
   let txIdx = 0
   let sharesHeld = 0
   let costBasisEur = 0

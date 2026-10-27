@@ -13,6 +13,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/history',           label: 'History',     icon: 'investments' },
   { href: '/ytd',               label: 'YTD',         icon: 'ytd'         },
   { href: '/year-analysis',     label: 'Year Analysis', icon: 'calendar'  },
+  { href: '/investment-performance', label: 'Investment Performance', icon: 'performance' },
   { href: '/recurring',         label: 'Recurring',   icon: 'recurring'   },
   { href: '/tools/projection',  label: 'Projection',   icon: 'projection'    },
   { href: '/contributions',     label: 'Contributions', icon: 'contributions' },

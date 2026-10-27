@@ -12,6 +12,7 @@ export type IconName =
   | 'contributions'
   | 'calendar'
   | 'ytd'
+  | 'performance'
   | 'eye'
   | 'eye-off'
 
@@ -84,6 +85,15 @@ const paths: Record<IconName, ReactNode> = {
       <rect x="4" y="14" width="4" height="7" rx="1" />
       <rect x="10" y="9" width="4" height="12" rx="1" />
       <rect x="16" y="4" width="4" height="17" rx="1" />
+    </>
+  ),
+  performance: (
+    <>
+      <path d="M4 16l6-6 5 3 6-8" />
+      <circle cx="4" cy="16" r="1.6" />
+      <circle cx="10" cy="10" r="1.6" />
+      <circle cx="15" cy="13" r="1.6" />
+      <circle cx="21" cy="5" r="1.6" />
     </>
   ),
   eye: (
