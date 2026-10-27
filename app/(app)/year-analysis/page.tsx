@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
 import { StatCard } from '@/components/ui/stat-card'
 import { money } from '@/lib/format'
@@ -157,10 +158,15 @@ export default async function YearAnalysisPage({
     // statements) — see computeInvestmentYtdRows / computeAssetClassYtd.
     // Fetched unfiltered (like portfolio_snapshots above) since the
     // selected year isn't known until after this batch resolves.
-    supabase
-      .from('investment_snapshots')
-      .select('investment_id, date, value_eur')
-      .returns<InvestmentSnapshotForYtd[]>(),
+    fetchAllRows<InvestmentSnapshotForYtd>((from, to) =>
+      supabase
+        .from('investment_snapshots')
+        .select('investment_id, date, value_eur')
+        .order('date', { ascending: true })
+        .order('investment_id', { ascending: true })
+        .range(from, to)
+        .returns<InvestmentSnapshotForYtd[]>()
+    ),
   ])
 
   const investments = invRes.data ?? []

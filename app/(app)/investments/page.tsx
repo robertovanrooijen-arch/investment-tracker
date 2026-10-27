@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
 import { computeInvestmentMetrics } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
@@ -50,11 +51,16 @@ export default async function InvestmentsPage() {
     // year-end statements) — see computeInvestmentYtdRows. Separate from the
     // 7-day daily-change query above; this only needs snapshots at/before
     // the current year's first day.
-    supabase
-      .from('investment_snapshots')
-      .select('investment_id, date, value_eur')
-      .lte('date', ytdPeriodStartIso)
-      .returns<InvestmentSnapshotForYtd[]>(),
+    fetchAllRows<InvestmentSnapshotForYtd>((from, to) =>
+      supabase
+        .from('investment_snapshots')
+        .select('investment_id, date, value_eur')
+        .lte('date', ytdPeriodStartIso)
+        .order('date', { ascending: true })
+        .order('investment_id', { ascending: true })
+        .range(from, to)
+        .returns<InvestmentSnapshotForYtd[]>()
+    ),
   ])
 
   const error = invRes.error

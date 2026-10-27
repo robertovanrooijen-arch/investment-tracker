@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
 import { StatCard } from '@/components/ui/stat-card'
 import { PortfolioHistoryChart } from '@/components/history/portfolio-history-chart'
@@ -31,6 +32,14 @@ type RawPortfolioSnapshot = {
   snapshot_source: string
 }
 
+type RawInvSnapRow = {
+  date: string
+  investment_id: string
+  value_eur: number | string
+  remaining_cost_basis_eur: number | string
+  investment: { id: string; type: InvestmentType } | null
+}
+
 export const dynamic = 'force-dynamic'
 
 function fmtPercent(n: number | null, digits = 2): string {
@@ -56,10 +65,15 @@ export default async function YtdPage() {
       .from('capital_flow_entries')
       .select('year, flow_date, direction, amount_eur')
       .returns<CapitalFlowEntryForYear[]>(),
-    supabase
-      .from('investment_snapshots')
-      .select('date, investment_id, value_eur, remaining_cost_basis_eur, realized_profit_eur, unrealized_profit_eur, investment:investments(id, type)')
-      .order('date', { ascending: true }),
+    fetchAllRows<RawInvSnapRow>((from, to) =>
+      supabase
+        .from('investment_snapshots')
+        .select('date, investment_id, value_eur, remaining_cost_basis_eur, investment:investments(id, type)')
+        .order('date', { ascending: true })
+        .order('investment_id', { ascending: true })
+        .range(from, to)
+        .returns<RawInvSnapRow[]>()
+    ),
   ])
 
   const investments = invRes.data ?? []
@@ -94,14 +108,7 @@ export default async function YtdPage() {
     snapshot_source: String(row.snapshot_source ?? ''),
   }))
 
-  type RawInvSnapRow = {
-    date: string
-    investment_id: string
-    value_eur: number | string
-    remaining_cost_basis_eur: number | string
-    investment: { id: string; type: InvestmentType } | null
-  }
-  const rawInvSnapshots = (invSnapRes.data ?? []) as unknown as RawInvSnapRow[]
+  const rawInvSnapshots = invSnapRes.data ?? []
   const investmentSnapshots: InvestmentSnapshotForYtd[] = rawInvSnapshots
     .filter((r) => r.investment != null)
     .map((r) => ({ investment_id: r.investment_id, date: r.date, value_eur: Number(r.value_eur) }))

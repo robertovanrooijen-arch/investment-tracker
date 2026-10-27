@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
 import { StatCard } from '@/components/ui/stat-card'
@@ -21,6 +22,14 @@ import { categoryLabel } from '@/lib/domain/allocation'
 import { buildInvestmentChartTimeline } from '@/lib/domain/chart-timeline'
 import type { Investment, Transaction } from '@/types/database'
 
+type InvestmentSnapshotRow = {
+  date: string
+  value_eur: number | string
+  remaining_cost_basis_eur: number | string
+  unrealized_profit_eur: number | string
+  quantity: number | string | null
+}
+
 export default async function InvestmentDetailPage({
   params,
 }: {
@@ -38,11 +47,15 @@ export default async function InvestmentDetailPage({
       .order('date', { ascending: false })
       .order('created_at', { ascending: false })
       .returns<Transaction[]>(),
-    supabase
-      .from('investment_snapshots')
-      .select('date, value_eur, remaining_cost_basis_eur, unrealized_profit_eur, quantity')
-      .eq('investment_id', id)
-      .order('date', { ascending: true }),
+    fetchAllRows<InvestmentSnapshotRow>((from, to) =>
+      supabase
+        .from('investment_snapshots')
+        .select('date, value_eur, remaining_cost_basis_eur, unrealized_profit_eur, quantity')
+        .eq('investment_id', id)
+        .order('date', { ascending: true })
+        .range(from, to)
+        .returns<InvestmentSnapshotRow[]>()
+    ),
     loadFxRates(supabase),
   ])
 

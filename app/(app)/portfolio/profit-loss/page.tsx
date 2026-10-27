@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
 import { StatCard } from '@/components/ui/stat-card'
 import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
@@ -19,6 +20,13 @@ import type { CapitalFlowEntryForYear, InvestmentSnapshotForYtd } from '@/lib/do
 import type { Investment, Transaction, InvestmentType } from '@/types/database'
 
 export const dynamic = 'force-dynamic'
+
+type RawInvSnapRow = {
+  date: string
+  investment_id: string
+  value_eur: number | string
+  investment: { id: string; type: InvestmentType } | null
+}
 
 function fmtPercent(n: number | null, digits = 2): string {
   if (n === null || !Number.isFinite(n)) return '—'
@@ -56,10 +64,15 @@ export default async function ProfitLossDetailsPage() {
       .from('capital_flow_entries')
       .select('year, flow_date, direction, amount_eur')
       .returns<CapitalFlowEntryForYear[]>(),
-    supabase
-      .from('investment_snapshots')
-      .select('date, investment_id, value_eur, remaining_cost_basis_eur, realized_profit_eur, unrealized_profit_eur, investment:investments(id, type)')
-      .order('date', { ascending: true }),
+    fetchAllRows<RawInvSnapRow>((from, to) =>
+      supabase
+        .from('investment_snapshots')
+        .select('date, investment_id, value_eur, investment:investments(id, type)')
+        .order('date', { ascending: true })
+        .order('investment_id', { ascending: true })
+        .range(from, to)
+        .returns<RawInvSnapRow[]>()
+    ),
   ])
 
   const investments = invRes.data ?? []
@@ -71,13 +84,7 @@ export default async function ProfitLossDetailsPage() {
     total_value_eur: Number(s.total_value_eur),
   }))
 
-  type RawInvSnapRow = {
-    date: string
-    investment_id: string
-    value_eur: number | string
-    investment: { id: string; type: InvestmentType } | null
-  }
-  const investmentSnapshots: InvestmentSnapshotForYtd[] = ((invSnapRes.data ?? []) as unknown as RawInvSnapRow[])
+  const investmentSnapshots: InvestmentSnapshotForYtd[] = (invSnapRes.data ?? [])
     .filter((r) => r.investment != null)
     .map((r) => ({ investment_id: r.investment_id, date: r.date, value_eur: Number(r.value_eur) }))
 

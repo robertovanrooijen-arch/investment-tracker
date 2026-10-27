@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
 import { StatCard } from '@/components/ui/stat-card'
 import { PortfolioHistoryChart } from '@/components/history/portfolio-history-chart'
@@ -63,11 +64,15 @@ export default async function HistoryPage() {
       .from('portfolio_snapshots')
       .select('date, total_value_eur, total_invested_eur, total_unrealized_eur, total_realized_eur, snapshot_source')
       .order('date', { ascending: true }),
-    supabase
-      .from('investment_snapshots')
-      .select('date, investment_id, value_eur, remaining_cost_basis_eur, realized_profit_eur, unrealized_profit_eur, investment:investments(id, name, type, platform)')
-      .order('date', { ascending: true })
-      .returns<DetailedInvSnapshotRow[]>(),
+    fetchAllRows<DetailedInvSnapshotRow>((from, to) =>
+      supabase
+        .from('investment_snapshots')
+        .select('date, investment_id, value_eur, remaining_cost_basis_eur, realized_profit_eur, unrealized_profit_eur, investment:investments(id, name, type, platform)')
+        .order('date', { ascending: true })
+        .order('investment_id', { ascending: true })
+        .range(from, to)
+        .returns<DetailedInvSnapshotRow[]>()
+    ),
     supabase.from('investments').select('*').returns<Investment[]>(),
     supabase.from('transactions').select('*').returns<Transaction[]>(),
     loadFxRates(supabase),
