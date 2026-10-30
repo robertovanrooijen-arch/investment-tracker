@@ -48,9 +48,6 @@ function makeBuy(overrides: Partial<Transaction>): Transaction {
     date: '2024-01-01',
     notes: null,
     created_at: '2024-01-01T00:00:00Z',
-    currency: 'EUR',
-    price_last_updated_at: null,
-    price_source: null,
     price_currency: 'EUR',
     fee_currency: 'EUR',
     fx_rate_to_eur: 1,
@@ -332,5 +329,27 @@ describe('computeInvestmentYtdRows — real financial edge cases', () => {
     const row = rows.find((r) => r.investmentId === 'a')!
     assert.notEqual(row.unavailableReason, null)
     assert.equal(row.ytdReturnPercent, null)
+  })
+})
+
+describe('income value date (VUSA dividend: value date 31-12-2025, booked 02-01-2026)', () => {
+  test('the dividend is 2025 income in the year analysis, while its booking date stays 2026', () => {
+    const vusa = {
+      id: 'v', user_id: 'u', name: 'VUSA', ticker: 'VUSA.AS', type: 'ETF', platform: 'DEGIRO', current_price: 100,
+      current_value: null, currency: 'EUR', price_last_updated_at: null, price_source: null, notes: null, created_at: '',
+      updated_at: '', commodity_kind: null, quantity_unit: null,
+    } as const
+    const base = {
+      user_id: 'u', investment_id: 'v', notes: null, created_at: '2025-01-01T00:00:00Z', price_currency: 'USD', fee_currency: 'USD',
+      fx_rate_to_eur: 0.8511362669163333, recurring_rule_id: null, is_contribution: false, contribution_source: null, fee: 0,
+    }
+    const txs = [
+      { ...base, id: 'b', type: 'buy', quantity: 9, price_per_unit: 100, amount: 900, date: '2025-01-10', price_currency: 'EUR', fee_currency: 'EUR', fx_rate_to_eur: 1 },
+      { ...base, id: 'd', type: 'dividend', quantity: null, price_per_unit: null, amount: 2.69, date: '2026-01-02', value_date: '2025-12-31' },
+    ] as never[]
+    const rows2025 = computeAssetYearRows([vusa as never], txs, 2025, { EUR: 1, USD: 0.85 })
+    const rows2026 = computeAssetYearRows([vusa as never], txs, 2026, { EUR: 1, USD: 0.85 })
+    assert.ok(Math.abs(rows2025[0].dividendsInterestInYearEur - 2.69 * 0.8511362669163333) < 1e-9)
+    assert.equal(rows2026[0]?.dividendsInterestInYearEur ?? 0, 0)
   })
 })

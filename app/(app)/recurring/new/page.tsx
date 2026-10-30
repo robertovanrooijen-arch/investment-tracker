@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments } from '@/lib/supabase/fetch-user-data'
 import { PageHeader } from '@/components/ui/page-header'
 import {
   RecurringForm,
@@ -17,12 +18,12 @@ export default async function NewRecurringPage() {
   } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const { data: invData } = await supabase
-    .from('investments')
-    .select('id, name, currency, type')
-    .eq('user_id', user.id)
-    .order('name', { ascending: true })
-    .returns<Array<{ id: string; name: string; currency: string; type: InvestmentType }>>()
+  const { data: invData } = await fetchAllInvestments<{
+    id: string
+    name: string
+    currency: string
+    type: InvestmentType
+  }>(supabase, 'id, name, currency, type', { userId: user.id, order: 'name' })
 
   const investments: InvestmentOption[] = (invData ?? []).map((inv) => ({
     id: inv.id,

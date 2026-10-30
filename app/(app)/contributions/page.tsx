@@ -2,16 +2,20 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/page-header'
+import { DataQualityNotice } from '@/components/ui/data-quality-notice'
 import { StatCard } from '@/components/ui/stat-card'
 import { money, fmtDate } from '@/lib/format'
-import type { CapitalFlowEntry } from '@/types/database'
-import { txToContribRow, getMonthKey, type ContribRow } from '@/lib/domain/contributions'
+import type { CapitalFlowEntry, Transaction } from '@/types/database'
+import { buildExternalCashFlowRows, type ContribRow } from '@/lib/domain/contributions'
+import { deriveAvailableYears } from '@/lib/domain/available-years'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PrivacyGate } from '@/components/ui/privacy-value'
 
 export const dynamic = 'force-dynamic'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-const AVAILABLE_YEARS = [2025, 2026]
+
+type ContribTx = Transaction & { investment: { platform: string } | null }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -49,9 +53,6 @@ export default async function ContributionsPage({
   searchParams: Promise<{ year?: string }>
 }) {
   const { year: yearParam } = await searchParams
-  const year = AVAILABLE_YEARS.includes(Number(yearParam))
-    ? Number(yearParam)
-    : 2026
 
   const supabase = await createClient()
 
@@ -60,43 +61,56 @@ export default async function ContributionsPage({
   } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const yearStart = `${year}-01-01`
-  const yearEnd   = `${year}-12-31`
-
+  // Whole ledger (paginated past the 1000-row API limit) so years can be
+  // derived from the data and a capital flow can supersede a legacy
+  // transaction regardless of year.
   const [ledgerRes, txRes] = await Promise.all([
-    supabase
-      .from('capital_flow_entries')
-      .select('*')
-      .eq('year', year)
-      .returns<CapitalFlowEntry[]>(),
-    supabase
-      .from('transactions')
-      .select('*, investment:investments(platform)')
-      // Only include transactions explicitly marked as a contribution/outflow
-      .eq('is_contribution', true)
-      .gte('date', yearStart)
-      .lte('date', yearEnd),
+    fetchAllRows<CapitalFlowEntry>((from, to) =>
+      supabase
+        .from('capital_flow_entries')
+        .select('*')
+        .order('id', { ascending: true })
+        .range(from, to)
+        .returns<CapitalFlowEntry[]>()
+    ),
+    fetchAllRows<ContribTx>((from, to) =>
+      supabase
+        .from('transactions')
+        .select('*, investment:investments(platform)')
+        // Legacy compatibility: only rows still flagged as a contribution.
+        .eq('is_contribution', true)
+        .order('id', { ascending: true })
+        .range(from, to)
+        .returns<ContribTx[]>()
+    ),
   ])
 
-  const ledgerRows: ContribRow[] = (ledgerRes.data ?? []).map((e) => ({
-    id: e.id,
-    flow_date: e.flow_date,
-    monthKey: getMonthKey(e.flow_date),
-    year: e.year,
-    platform: e.platform,
-    direction: e.direction,
-    amount_eur: Number(e.amount_eur),
-    source: 'ledger' as const,
-    notes: e.notes,
-    created_at: e.created_at,
-  }))
+  const external = buildExternalCashFlowRows(ledgerRes.data ?? [], txRes.data ?? [])
 
-  const txRows: ContribRow[] = (txRes.data ?? []).flatMap((tx) => {
-    const row = txToContribRow(tx as Parameters<typeof txToContribRow>[0])
-    return row ? [row] : []
-  })
+  // Legacy rows with an unknown EUR amount (missing FX) stay IN the list with
+  // amount NaN: every total they belong to then shows '—' (fail-closed) and
+  // the notice below explains why — never a silently lower total.
+  const allRows = [...external.rows, ...external.fxMissingRows]
+  // Per-year totals over ALL years (plain sums: an unknown row → '—').
+  const perYear = Array.from(
+    allRows.reduce((m, r) => {
+      const y = m.get(r.year) ?? { inEur: 0, outEur: 0 }
+      if (r.direction === 'to_portfolio') y.inEur += Number(r.amount_eur)
+      else y.outEur += Number(r.amount_eur)
+      return m.set(r.year, y)
+    }, new Map<number, { inEur: number; outEur: number }>())
+  ).sort((a, b) => a[0] - b[0])
+  const availableYears = deriveAvailableYears(allRows.map((r) => r.flow_date))
+  const requestedYear = Number(yearParam)
+  const year = availableYears.includes(requestedYear)
+    ? requestedYear
+    : availableYears[availableYears.length - 1]
 
-  const entries = [...ledgerRows, ...txRows].sort((a, b) => {
+  const yearRows = allRows.filter((r) => r.year === year)
+  const fxMissingInYear = external.fxMissingRows.filter((r) => r.year === year).length
+  const legacyCountInYear = yearRows.filter((r) => r.source === 'transaction').length
+
+  const entries = [...yearRows].sort((a, b) => {
     if (a.flow_date !== b.flow_date) return a.flow_date > b.flow_date ? -1 : 1
     return a.created_at > b.created_at ? -1 : 1
   })
@@ -162,9 +176,42 @@ export default async function ContributionsPage({
         </Link>
       </div>
 
+      {/* ── All years ── */}
+      {perYear.length > 0 && (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div className="px-5 md:px-6 py-4 border-b border-slate-100">
+            <h2 className="text-base font-semibold text-slate-900">External money per year</h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Only money moving between your bank and a platform. Sales, re-investments and confirmed internal
+              transfers between platforms are not contributions.
+            </p>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-100 text-xs text-slate-500">
+                <th className="text-left px-5 py-2 font-medium">Year</th>
+                <th className="text-right px-4 py-2 font-medium">Gross deposits</th>
+                <th className="text-right px-4 py-2 font-medium">Gross withdrawals</th>
+                <th className="text-right px-5 py-2 font-medium">Net contributed</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {perYear.map(([y, v]) => (
+                <tr key={y}>
+                  <td className="px-5 py-2 text-slate-900">{y}</td>
+                  <td className="px-4 py-2 text-right tabular-nums"><PrivacyGate fallback="—"><>{money(v.inEur, 'EUR')}</></PrivacyGate></td>
+                  <td className="px-4 py-2 text-right tabular-nums"><PrivacyGate fallback="—"><>{money(v.outEur, 'EUR')}</></PrivacyGate></td>
+                  <td className="px-5 py-2 text-right tabular-nums font-medium"><PrivacyGate fallback="—"><>{money(v.inEur - v.outEur, 'EUR')}</></PrivacyGate></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {/* ── Year selector ── */}
       <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
-        {AVAILABLE_YEARS.map((y) => (
+        {availableYears.map((y) => (
           <Link
             key={y}
             href={`/contributions?year=${y}`}
@@ -178,6 +225,17 @@ export default async function ContributionsPage({
           </Link>
         ))}
       </div>
+
+      <DataQualityNotice legacyContributionsSkippedFx={fxMissingInYear} />
+
+      {legacyCountInYear > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {legacyCountInYear} {legacyCountInYear === 1 ? 'entry' : 'entries'} in {year} still{' '}
+          {legacyCountInYear === 1 ? 'comes' : 'come'} from a transaction flagged as a contribution
+          (legacy). They keep counting until a capital flow is recorded for them; new external money
+          is recorded only as a capital flow.
+        </div>
+      )}
 
       {/* ── Summary cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -212,14 +270,7 @@ export default async function ContributionsPage({
           <Link href="/contributions/new" className="font-medium text-slate-900 underline">
             Add the first one
           </Link>
-          {year !== 2026 && (
-            <>
-              {' '}or{' '}
-              <Link href="/contributions?year=2026" className="font-medium text-slate-900 underline">
-                switch to 2026
-              </Link>
-            </>
-          )}
+
           .
         </div>
       )}

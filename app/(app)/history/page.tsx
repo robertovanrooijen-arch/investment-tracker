@@ -1,6 +1,8 @@
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
+import { CURRENT_PL_DEFINITION_VERSION } from '@/lib/domain/snapshot-method'
 import { StatCard } from '@/components/ui/stat-card'
 import { PortfolioHistoryChart } from '@/components/history/portfolio-history-chart'
 import { BreakdownChart } from '@/components/history/breakdown-chart'
@@ -8,13 +10,12 @@ import type { BreakdownSnapshot, BreakdownEntity } from '@/components/history/br
 import {
   computePortfolioMetrics,
   computeInvestmentMetrics,
-  pct,
 } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
 import { money } from '@/lib/format'
 import { categoryLabel } from '@/lib/domain/allocation'
 import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
-import type { Investment, Transaction, InvestmentType } from '@/types/database'
+import type { InvestmentType } from '@/types/database'
 import type { LivePoint } from '@/components/history/portfolio-history-chart'
 
 export const dynamic = 'force-dynamic'
@@ -43,6 +44,7 @@ type PortfolioSnapshotRow = {
   total_unrealized_eur: number
   total_realized_eur: number
   snapshot_source: string
+  pl_definition_version: number | null
 }
 
 type DetailedInvSnapshotRow = {
@@ -62,7 +64,8 @@ export default async function HistoryPage() {
   const [portfolioRes, invSnapshotRes, invRes, txRes, fxRes] = await Promise.all([
     supabase
       .from('portfolio_snapshots')
-      .select('date, total_value_eur, total_invested_eur, total_unrealized_eur, total_realized_eur, snapshot_source')
+      // '*' so pl_definition_version is included once migration M7 adds it.
+      .select('*')
       .order('date', { ascending: true }),
     fetchAllRows<DetailedInvSnapshotRow>((from, to) =>
       supabase
@@ -73,8 +76,8 @@ export default async function HistoryPage() {
         .range(from, to)
         .returns<DetailedInvSnapshotRow[]>()
     ),
-    supabase.from('investments').select('*').returns<Investment[]>(),
-    supabase.from('transactions').select('*').returns<Transaction[]>(),
+    fetchAllInvestments(supabase),
+    fetchAllTransactions(supabase),
     loadFxRates(supabase),
   ])
 
@@ -86,6 +89,7 @@ export default async function HistoryPage() {
     total_unrealized_eur: Number(row.total_unrealized_eur),
     total_realized_eur: Number(row.total_realized_eur ?? 0),
     snapshot_source: String(row.snapshot_source ?? ''),
+    pl_definition_version: row.pl_definition_version == null ? null : Number(row.pl_definition_version),
   }))
 
   // Normalise detailed investment snapshot rows
@@ -151,6 +155,7 @@ export default async function HistoryPage() {
     total_unrealized_eur: liveMetrics.totalUnrealized,
     total_realized_eur: liveMetrics.totalRealized,
     snapshot_source: 'live',
+    pl_definition_version: CURRENT_PL_DEFINITION_VERSION,
   }
 
   const portfolioSnapshots: PortfolioSnapshotRow[] = [
@@ -358,14 +363,14 @@ export default async function HistoryPage() {
                 <PrivacyMoney
                   value={liveMetrics.totalProfit}
                   signed
-                  fallbackText={liveMetrics.totalProfitPct !== null ? pct(liveMetrics.totalProfitPct) : '—'}
+                  fallbackText="—"
                 />
               }
               hint={
                 liveMetrics.totalEverInvested > 0 ? (
                   <PrivacyGate>
                     <>
-                      {pct(liveMetrics.totalProfitPct)} · {money(liveMetrics.totalRealized, 'EUR')} realized ·{' '}
+                      {money(liveMetrics.totalRealized, 'EUR')} realized ·{' '}
                       {money(liveMetrics.totalUnrealized, 'EUR')} unrealized
                     </>
                   </PrivacyGate>

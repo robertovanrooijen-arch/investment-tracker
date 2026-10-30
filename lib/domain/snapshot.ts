@@ -3,6 +3,8 @@ import type {
   InvestmentMetrics,
   PortfolioMetrics,
 } from '@/lib/domain/calculations'
+import type { PriceStatus } from '@/lib/domain/price-update'
+import { CURRENT_PL_DEFINITION_VERSION } from '@/lib/domain/snapshot-method'
 
 export type SnapshotSource = 'manual_refresh' | 'cron'
 
@@ -22,6 +24,18 @@ export type InvestmentSnapshotInput = {
   metrics: InvestmentMetrics // already converted to EUR
   currentPriceNative: number | null
   currency: string
+  // Only set when the pending snapshot-quality migration has been applied
+  // (SNAPSHOT_QUALITY_COLUMNS=enabled). Omitted → identical rows to before.
+  quality?: {
+    price_status: PriceStatus
+    price_as_of: string | null
+    fx_eur_per_unit: number | null
+  }
+}
+
+export type PortfolioSnapshotQuality = {
+  stale_positions: number
+  fx_incomplete_positions: number
 }
 
 export function todayLocalIso(): string {
@@ -62,8 +76,22 @@ export async function upsertTodaysSnapshot(
   supabase: SupabaseClient,
   userId: string,
   metrics: PortfolioMetrics,
-  source: SnapshotSource = 'manual_refresh'
+  source: SnapshotSource = 'manual_refresh',
+  quality?: PortfolioSnapshotQuality
 ): Promise<{ snapshot: UpsertedSnapshot | null; error: string | null }> {
+  // Defensive guard (the caller already checks): never store an unknown or
+  // partial total as if it were a complete historical value.
+  const required = [
+    metrics.totalValue,
+    metrics.totalInvested,
+    metrics.totalRealized,
+    metrics.totalUnrealized,
+    metrics.totalEverInvested,
+  ]
+  if (!metrics.complete || !required.every(Number.isFinite)) {
+    return { snapshot: null, error: 'Refusing to write an incomplete portfolio snapshot (missing FX).' }
+  }
+
   const date = todayLocalIso()
   const updatedAt = new Date().toISOString()
 
@@ -77,6 +105,8 @@ export async function upsertTodaysSnapshot(
     total_ever_invested_eur: metrics.totalEverInvested,
     snapshot_source: source,
     updated_at: updatedAt,
+    // Quality/method columns exist only after migration M7 (flag-gated).
+    ...(quality ? { ...quality, method: 'live', pl_definition_version: CURRENT_PL_DEFINITION_VERSION } : {}),
   }
 
   const { data, error } = await supabase
@@ -103,6 +133,14 @@ export async function upsertTodaysInvestmentSnapshots(
   source: SnapshotSource = 'manual_refresh'
 ): Promise<{ upserted: number; error: string | null }> {
   if (inputs.length === 0) return { upserted: 0, error: null }
+  const incomplete = inputs.filter(
+    (i) =>
+      ![i.metrics.currentValue, i.metrics.remainingCostBasis, i.metrics.realizedProfit, i.metrics.unrealizedProfit]
+        .every(Number.isFinite)
+  )
+  if (incomplete.length > 0) {
+    return { upserted: 0, error: `Refusing to write ${incomplete.length} incomplete position snapshot(s) (missing FX).` }
+  }
 
   const date = todayLocalIso()
   const updatedAt = new Date().toISOString()
@@ -120,6 +158,9 @@ export async function upsertTodaysInvestmentSnapshots(
     currency: input.currency,
     snapshot_source: source,
     updated_at: updatedAt,
+    ...(input.quality
+      ? { ...input.quality, method: 'live', pl_definition_version: CURRENT_PL_DEFINITION_VERSION }
+      : {}),
   }))
 
   const { error } = await supabase

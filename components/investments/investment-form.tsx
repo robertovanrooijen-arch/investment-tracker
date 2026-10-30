@@ -9,7 +9,6 @@ import {
   PLATFORMS,
   hasUnits,
   COMMODITY_KINDS,
-  QUANTITY_UNITS,
   DEFAULT_COMMODITY_TICKERS,
   normalizePlatformName,
 } from '@/lib/domain/constants'

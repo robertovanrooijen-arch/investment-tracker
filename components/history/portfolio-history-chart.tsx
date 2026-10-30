@@ -6,6 +6,7 @@ import {
   Line,
   LineChart,
   ReferenceArea,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -17,6 +18,17 @@ import { downsampleForPreset, cutoffDateIso } from '@/lib/domain/chart-series'
 import { categoryLabel } from '@/lib/domain/allocation'
 import { useAccountPrivacy } from '@/lib/privacy/privacy-context'
 import type { Preset } from '@/lib/domain/chart-series'
+import {
+  findPlDefinitionBreaks,
+  plDefinitionVersionOf,
+  plSeriesKey,
+  CURRENT_PL_DEFINITION_VERSION,
+  LEGACY_PL_DEFINITION_VERSION,
+} from '@/lib/domain/snapshot-method'
+
+// Profit/loss computed under the OLD definition lives in its own series so it
+// is never joined to current-definition points by one continuous line.
+const LEGACY_PROFIT_KEY = plSeriesKey('total_profit_eur', LEGACY_PL_DEFINITION_VERSION)
 import type { InvestmentType } from '@/types/database'
 
 // ── Prop types ─────────────────────────────────────────────────────────────
@@ -28,6 +40,9 @@ export type PortfolioSnapshot = {
   total_unrealized_eur: number
   total_realized_eur: number
   snapshot_source: string
+  // P/L definition version (see lib/domain/snapshot-method.ts); absent/null
+  // means a row written before versioning → v1.
+  pl_definition_version?: number | null
 }
 
 export type InvSnapshot = {
@@ -185,6 +200,7 @@ function fmtYAxis(n: number, mode: ViewMode): string {
 // ── Color lookup ───────────────────────────────────────────────────────────
 
 function colorForKey(dataKey: string): string {
+  if (dataKey === LEGACY_PROFIT_KEY) return '#86efac'
   const s = STATIC_SERIES.find((x) => x.key === dataKey)
   if (s) return s.color
   return TYPE_COLORS[dataKey] ?? '#9ca3af'
@@ -356,7 +372,11 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
         // Main series: portfolio_snapshots only — always matches Dashboard
         total_value_eur:     snap.total_value_eur,
         cost_basis_eur:      snap.total_invested_eur,
-        total_profit_eur:    snap.total_realized_eur + snap.total_unrealized_eur,
+        // Profit/loss goes to the series of ITS P/L definition (current →
+        // 'total_profit_eur', older → its own key), so a method change is
+        // never drawn as a market movement.
+        [plSeriesKey('total_profit_eur', plDefinitionVersionOf(snap))]:
+                             snap.total_realized_eur + snap.total_unrealized_eur,
         // Breakdown series: investment_snapshots / livePoint
         invested_assets_eur: assetValue,
         cash_value_eur:      cashValue,
@@ -410,6 +430,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
 
     const numericKeys: string[] = [
       ...STATIC_SERIES.map((s) => s.key),
+      LEGACY_PROFIT_KEY,
       ...activeTypes,
     ]
 
@@ -451,6 +472,14 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
   )
   const chartTicks = useMemo(() => getChartTicks(chartDates), [chartDates])
   const tickFmt    = useMemo(() => getTickFormatter(chartDates), [chartDates])
+
+  // P/L definition changes inside the visible range (see snapshot-method.ts).
+  const plBreaks = useMemo(
+    () => findPlDefinitionBreaks(sampled.map((s) => ({ date: s.date, version: plDefinitionVersionOf(s) }))),
+    [sampled],
+  )
+  const hasLegacyProfit = displayData.some((r) => r[LEGACY_PROFIT_KEY] != null)
+  const currentProfitPoints = displayData.filter((r) => r.total_profit_eur != null).length
 
   const renderTooltip = useCallback(
     (props: object) => <ChartTooltip {...(props as { active?: boolean; payload?: TooltipEntry[]; label?: string })} viewMode={effectiveViewMode} />,
@@ -700,21 +729,47 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
                   />
                 )}
 
+                {visibleSeries.has('total_profit_eur') &&
+                  plBreaks.map((b) => (
+                    <ReferenceLine
+                      key={`pl-break-${b.date}`}
+                      x={b.date}
+                      stroke="#f59e0b"
+                      strokeDasharray="4 3"
+                      label={{ value: 'P/L method change', position: 'insideTopLeft', fontSize: 11, fill: '#b45309' }}
+                    />
+                  ))}
+
                 {STATIC_SERIES.map((s) =>
                   !visibleSeries.has(s.key) ? null : (
                     <Line
                       key={s.key}
                       type="monotone"
                       dataKey={s.key}
-                      name={s.label}
+                      name={s.key === 'total_profit_eur' && hasLegacyProfit ? `${s.label} (v${CURRENT_PL_DEFINITION_VERSION})` : s.label}
                       stroke={s.color}
                       strokeWidth={s.strokeWidth}
                       strokeDasharray={s.strokeDasharray}
-                      dot={false}
+                      dot={s.key === 'total_profit_eur' && currentProfitPoints === 1 ? { r: 3 } : false}
                       activeDot={{ r: 4 }}
                       connectNulls={!openingPoint}
                     />
                   ),
+                )}
+
+                {visibleSeries.has('total_profit_eur') && hasLegacyProfit && (
+                  <Line
+                    key={LEGACY_PROFIT_KEY}
+                    type="monotone"
+                    dataKey={LEGACY_PROFIT_KEY}
+                    name={`Profit / loss (v${LEGACY_PL_DEFINITION_VERSION}, old definition)`}
+                    stroke={colorForKey(LEGACY_PROFIT_KEY)}
+                    strokeWidth={1.5}
+                    strokeDasharray="2 3"
+                    dot={false}
+                    activeDot={{ r: 3 }}
+                    connectNulls={!openingPoint}
+                  />
                 )}
 
                 {activeTypes.map((type) =>
@@ -743,6 +798,15 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
                 : 'No snapshots in this timeframe — pick a longer range.'}
             </p>
           </div>
+        )}
+
+        {visibleSeries.has('total_profit_eur') && hasLegacyProfit && (
+          <p className="mt-3 text-xs text-amber-700">
+            Profit / loss method change{plBreaks.length > 0 ? ` on ${plBreaks.map((b) => b.date).join(', ')}` : ''}:
+            the dotted line uses the old definition (v{LEGACY_PL_DEFINITION_VERSION} — dividend/interest on
+            holdings not counted as realized profit), the solid line the current one (v{CURRENT_PL_DEFINITION_VERSION}).
+            They are deliberately not connected; the step between them is a method change, not a market move.
+          </p>
         )}
       </div>
     </div>

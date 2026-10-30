@@ -225,9 +225,6 @@ async function verify() {
   }
 
   console.log('\n=== is_contribution check on all new/changed rows ===')
-  const changedIds = [
-    ...VUSA_INSERTS, ...IWDA_INSERTS,
-  ]
   const { data: allNewTxs } = await supabase.from('transactions').select('is_contribution, investment_id, date, type').in('investment_id', invIds)
   const badContrib = allNewTxs.filter((t) => t.is_contribution === true)
   console.log('rows with is_contribution=true (should be empty):', badContrib.length)

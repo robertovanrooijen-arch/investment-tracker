@@ -1,7 +1,10 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
+import { DataQualityNotice } from '@/components/ui/data-quality-notice'
+import { unfundedPlatforms } from '@/lib/domain/reconciliation'
 import { StatCard } from '@/components/ui/stat-card'
 import { money } from '@/lib/format'
 import { loadFxRates } from '@/lib/domain/fx'
@@ -10,6 +13,8 @@ import { categoryLabel } from '@/lib/domain/allocation'
 import { PrivacyGate, PrivacyMoney } from '@/components/ui/privacy-value'
 import {
   getAvailableYears,
+  isEstimatedCapitalFlowSource,
+  isLiveSnapshotSource,
   computeAssetYearRows,
   computeAssetClassSummaries,
   computeAssetClassYtd,
@@ -33,7 +38,6 @@ import {
   AssetPnlRankingChart,
   MonthlyCashflowChart,
 } from '@/components/year-analysis/charts'
-import type { Investment, Transaction } from '@/types/database'
 
 export const dynamic = 'force-dynamic'
 
@@ -142,18 +146,25 @@ export default async function YearAnalysisPage({
   const supabase = await createClient()
 
   const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes] = await Promise.all([
-    supabase.from('investments').select('*').returns<Investment[]>(),
-    supabase.from('transactions').select('*').returns<Transaction[]>(),
+    fetchAllInvestments(supabase),
+    fetchAllTransactions(supabase),
     loadFxRates(supabase),
     supabase
       .from('portfolio_snapshots')
-      .select('date, total_value_eur, total_realized_eur, total_unrealized_eur, updated_at, snapshot_source')
+      // '*' so pl_definition_version is included once migration M7 adds it.
+      .select('*')
       .order('date', { ascending: true })
       .returns<SnapshotForAudit[]>(),
-    supabase
-      .from('capital_flow_entries')
-      .select('year, flow_date, direction, amount_eur')
-      .returns<CapitalFlowEntryForYear[]>(),
+    fetchAllRows<CapitalFlowEntryForYear>((from, to) =>
+      supabase
+        .from('capital_flow_entries')
+        // '*' so linked_transaction_id is picked up automatically once the
+        // pending migration adds it (prevents double-counting migrated rows).
+        .select('*')
+        .order('id', { ascending: true })
+        .range(from, to)
+        .returns<CapitalFlowEntryForYear[]>()
+    ),
     // Source-backed per-investment valuations (e.g. official year-end
     // statements) — see computeInvestmentYtdRows / computeAssetClassYtd.
     // Fetched unfiltered (like portfolio_snapshots above) since the
@@ -180,13 +191,19 @@ export default async function YearAnalysisPage({
     value_eur: Number(s.value_eur),
   }))
 
-  const availableYears = getAvailableYears(transactions)
+  const availableYears = getAvailableYears(transactions, [
+    ...capitalFlowEntries.map((f) => f.flow_date),
+    ...snapshots.map((s) => s.date),
+  ])
   const { year: yearParam } = await searchParams
   const year = availableYears.includes(Number(yearParam))
     ? Number(yearParam)
     : availableYears[0]
 
   const liveMetrics = computePortfolioMetrics(investments, transactions, fxRates)
+  const estimatedFlowCount = capitalFlowEntries.filter(
+    (f) => f.year === year && isEstimatedCapitalFlowSource(f.source)
+  ).length
 
   const assetRows = computeAssetYearRows(investments, transactions, year, fxRates)
   const classSummaries = computeAssetClassSummaries(assetRows)
@@ -199,6 +216,9 @@ export default async function YearAnalysisPage({
     transactions,
     liveMetrics.totalValue
   )
+  const startSnapshotIsImported =
+    summary.startValueDate !== null &&
+    !isLiveSnapshotSource(snapshots.find((s) => s.date === summary.startValueDate)?.snapshot_source)
   const bridgeData = computePortfolioBridgeData(summary)
   const pnlRanking = computeAssetPnlRanking(assetRows)
   const verdict = computeYearVerdict(summary, classSummaries)
@@ -221,6 +241,13 @@ export default async function YearAnalysisPage({
       <PageHeader
         title="Year Analysis"
         subtitle="How your portfolio and individual holdings performed in a given year."
+      />
+
+      <DataQualityNotice
+        fxIncompleteCount={Math.max(liveMetrics.fxIncompleteCount, summary.fxIncompleteCount)}
+        fxLiveFallbackCount={liveMetrics.fxLiveFallbackCount}
+        legacyContributionsSkippedFx={summary.legacyContributionsSkippedFx}
+        unfundedPlatforms={unfundedPlatforms(investments, transactions, capitalFlowEntries, fxRates)}
       />
 
       {/* Year selector */}
@@ -252,7 +279,7 @@ export default async function YearAnalysisPage({
         </div>
       )}
 
-      {summary.valuationIsApproximate && year !== 2025 && (
+      {summary.valuationIsApproximate && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           Past-year unrealized P/L uses current prices unless historical snapshots/prices are available — {year}&apos;s
           quantities and cost basis are exact (from your transaction history), but they&apos;re valued at today&apos;s
@@ -260,10 +287,11 @@ export default async function YearAnalysisPage({
         </div>
       )}
 
-      {year === 2025 && (
+      {estimatedFlowCount > 0 && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          2025 is indicative: DEGIRO 2025 cashflow dates still use bulk rows, and open-position P/L may use current
-          prices rather than exact 2025 year-end prices.
+          {year} is indicative: {estimatedFlowCount} capital flow{estimatedFlowCount === 1 ? '' : 's'} in {year}{' '}
+          {estimatedFlowCount === 1 ? 'is an estimate' : 'are estimates'} (spread evenly over months, not dated bank
+          records), so contribution timing and the time-weighted return are approximate.
         </div>
       )}
 
@@ -276,10 +304,10 @@ export default async function YearAnalysisPage({
       </div>
 
       {/* Summary cards */}
-      {summary.startValueDate === '2025-12-31' && (
+      {startSnapshotIsImported && (
         <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-          Start value is corrected from official platform statements. Historical snapshot P/L fields for 2025-12-31
-          are not fully reconstructed, so P/L bridge details remain approximate.
+          Start value ({summary.startValueDate}) comes from an imported or corrected snapshot, not a live refresh.
+          Its historical P/L fields are not fully reconstructed, so P/L bridge details remain approximate.
         </p>
       )}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

@@ -12,9 +12,26 @@
 // fabricated, never inferred from unrelated EUR values — a ticker that
 // can't be fetched reports null, not a guess.
 
+import { normalizeQuoteCurrency } from '@/lib/domain/price-update'
+import {
+  investmentPriceUnit,
+  marketReturn,
+  quoteUnitForSymbol,
+  type MarketReturn,
+  type PriceUnit,
+} from '@/lib/domain/price-normalization'
+import type { Investment } from '@/types/database'
+
 export type HistoricalClose = {
-  // Split-adjusted close in the ticker's native currency.
+  // Close in the ticker's quote currency and quote unit (see currency /
+  // unit), of the price type in priceType. Normalise with
+  // price-normalization.ts before comparing it with anything.
   closeNative: number
+  // Quote currency reported by Yahoo, normalised to ISO (GBp → GBP, price/100);
+  // null when Yahoo did not report a usable currency.
+  currency: string | null
+  unit: PriceUnit
+  priceType: 'close' | 'adj_close'
   // The actual trading day this close belongs to — may be a few days
   // before the requested date (weekends/holidays), shown to the user so
   // the comparison point is never silently wrong.
@@ -29,20 +46,23 @@ type YahooChartSeriesPoint = {
 
 /**
  * Picks the trading day on/before `targetUnixSec` with the close nearest
- * to it, preferring the split-adjusted close when available. Returns null
+ * to it. By default the UNADJUSTED close — the same price type as the live
+ * quote it is compared with; pass 'adj_close' only to compare adjusted with
+ * adjusted (falls back to close when no adjusted value exists). Returns null
  * when nothing in `series` is on/before the target — never picks a date
  * AFTER the target, which would silently answer a different question
  * ("return since some other day") than the one asked.
  */
 export function selectClosestClose(
   series: YahooChartSeriesPoint[],
-  targetUnixSec: number
+  targetUnixSec: number,
+  priceType: 'close' | 'adj_close' = 'close'
 ): { closeNative: number; timestampSec: number } | null {
   let best: { closeNative: number; timestampSec: number } | null = null
 
   for (const point of series) {
     if (point.timestampSec > targetUnixSec) continue
-    const price = point.adjClose ?? point.close
+    const price = priceType === 'adj_close' ? point.adjClose ?? point.close : point.close
     if (price === null || !Number.isFinite(price) || price <= 0) continue
     if (best === null || point.timestampSec > best.timestampSec) {
       best = { closeNative: price, timestampSec: point.timestampSec }
@@ -112,6 +132,7 @@ export async function fetchYahooHistoricalClose(
   type ChartApiResponse = {
     chart?: {
       result?: Array<{
+        meta?: { currency?: unknown }
         timestamp?: unknown
         indicators?: {
           quote?: Array<{ close?: unknown }>
@@ -133,11 +154,16 @@ export async function fetchYahooHistoricalClose(
     adjClose: Array.isArray(adjCloses) && typeof adjCloses[i] === 'number' ? adjCloses[i] : null,
   }))
 
-  const picked = selectClosestClose(series, targetUnixSec)
+  const picked = selectClosestClose(series, targetUnixSec, 'close')
   if (!picked) return null
 
+  const rawCurrency = result?.meta?.currency
+  const normalized = normalizeQuoteCurrency(picked.closeNative, typeof rawCurrency === 'string' ? rawCurrency : null)
   return {
-    closeNative: picked.closeNative,
+    closeNative: normalized ? normalized.price : picked.closeNative,
+    currency: normalized ? normalized.currency : null,
+    unit: quoteUnitForSymbol(ticker),
+    priceType: 'close',
     asOfDateIso: new Date(picked.timestampSec * 1000).toISOString().slice(0, 10),
   }
 }
@@ -163,4 +189,34 @@ export async function fetchMarketYtdCloses(
     map.set(ticker, r.status === 'fulfilled' ? r.value : null)
   })
   return map
+}
+
+/**
+ * Market YTD for one investment: today's stored price (per the investment's
+ * own unit, in its own currency — e.g. per GRAM for gram-tracked metals)
+ * against the year-start close (per the symbol's quote unit — per TROY
+ * OUNCE for GC=F/SI=F), after normalising both to the investment's unit and
+ * currency. Unadjusted close vs live price (same price type). A currency
+ * mismatch or unknown unit returns null with a reason — no FX is mixed into a
+ * market return here, and no unit is guessed.
+ */
+export function computeMarketYtdForInvestment(
+  inv: Pick<Investment, 'type' | 'quantity_unit' | 'currency' | 'current_price'>,
+  historical: HistoricalClose | null,
+  todayIso: string
+): MarketReturn {
+  if (!historical) return { percent: null, reason: 'No year-start close available.' }
+  if (inv.current_price === null || !(inv.current_price > 0)) return { percent: null, reason: 'No current price.' }
+  const unit = investmentPriceUnit(inv)
+  if (unit === null) return { percent: null, reason: 'Commodity without a quantity unit — not compared.' }
+  if (!historical.currency) return { percent: null, reason: 'Year-start close has no known currency.' }
+  const currency = inv.currency ?? 'EUR'
+  if (historical.currency !== currency) {
+    return { percent: null, reason: `Year-start close is in ${historical.currency}, the position in ${currency}.` }
+  }
+  return marketReturn(
+    { price: historical.closeNative, currency: historical.currency, unit: historical.unit, priceDate: historical.asOfDateIso, priceType: historical.priceType },
+    { price: inv.current_price, currency, unit, priceDate: todayIso, priceType: 'live' },
+    { unit, currency }
+  )
 }

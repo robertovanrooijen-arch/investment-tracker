@@ -1,11 +1,12 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { PageHeader } from '@/components/ui/page-header'
 import { WhatIfBuy } from '@/components/investments/what-if-buy'
 import { computeInvestmentMetrics } from '@/lib/domain/calculations'
 import { hasUnits } from '@/lib/domain/constants'
-import type { Investment, Transaction } from '@/types/database'
+import type { Investment } from '@/types/database'
 
 export default async function WhatIfBuyPage({
   params,
@@ -17,11 +18,7 @@ export default async function WhatIfBuyPage({
 
   const [invRes, txRes] = await Promise.all([
     supabase.from('investments').select('*').eq('id', id).single<Investment>(),
-    supabase
-      .from('transactions')
-      .select('*')
-      .eq('investment_id', id)
-      .returns<Transaction[]>(),
+    fetchAllTransactions(supabase, '*', { investmentId: id }),
   ])
 
   if (invRes.error || !invRes.data) {

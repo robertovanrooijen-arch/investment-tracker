@@ -1,13 +1,14 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { PageHeader } from '@/components/ui/page-header'
+import { DataQualityNotice } from '@/components/ui/data-quality-notice'
 import { StatCard } from '@/components/ui/stat-card'
 import { AllocationPageClient } from '@/components/allocation/allocation-page-client'
 import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import { pct } from '@/lib/domain/calculations'
 import { buildPortfolioAllocation, categorySlug } from '@/lib/domain/allocation'
 import { loadFxRates } from '@/lib/domain/fx'
-import type { Investment, Transaction } from '@/types/database'
 
 export default async function AssetAllocationPage({
   searchParams,
@@ -18,8 +19,8 @@ export default async function AssetAllocationPage({
   const supabase = await createClient()
 
   const [invRes, txRes, fxRes] = await Promise.all([
-    supabase.from('investments').select('*').returns<Investment[]>(),
-    supabase.from('transactions').select('*').returns<Transaction[]>(),
+    fetchAllInvestments(supabase),
+    fetchAllTransactions(supabase),
     loadFxRates(supabase),
   ])
 
@@ -36,7 +37,8 @@ export default async function AssetAllocationPage({
       ? categorySlug(category)
       : null
 
-  const isEmpty = allocation.holdings.length === 0
+  // An allocation withheld because of missing FX is not "empty" — the notice explains it.
+  const isEmpty = allocation.holdings.length === 0 && allocation.fxIncompleteCount === 0
 
   return (
     <div className="space-y-6">
@@ -50,6 +52,8 @@ export default async function AssetAllocationPage({
         title="Asset Allocation"
         subtitle="Explore how your portfolio is distributed across asset classes and individual holdings."
       />
+
+      <DataQualityNotice fxIncompleteCount={allocation.fxIncompleteCount} />
 
       {isEmpty ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center">

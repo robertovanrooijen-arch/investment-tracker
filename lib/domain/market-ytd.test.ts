@@ -14,15 +14,21 @@ describe('selectClosestClose', () => {
     assert.deepEqual(result, { closeNative: 11, timestampSec: 950 })
   })
 
-  test('prefers adjClose over close when both are present', () => {
+  test('uses the UNADJUSTED close by default (same price type as the live quote it is compared with)', () => {
     const series = [{ timestampSec: 500, close: 100, adjClose: 95 }]
     const result = selectClosestClose(series, 1000)
+    assert.equal(result?.closeNative, 100)
+  })
+
+  test('prefers adjClose over close when adjusted prices are explicitly requested', () => {
+    const series = [{ timestampSec: 500, close: 100, adjClose: 95 }]
+    const result = selectClosestClose(series, 1000, 'adj_close')
     assert.equal(result?.closeNative, 95)
   })
 
   test('falls back to close when adjClose is null', () => {
     const series = [{ timestampSec: 500, close: 100, adjClose: null }]
-    const result = selectClosestClose(series, 1000)
+    const result = selectClosestClose(series, 1000, 'adj_close')
     assert.equal(result?.closeNative, 100)
   })
 

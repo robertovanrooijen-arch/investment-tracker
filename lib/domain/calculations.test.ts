@@ -38,9 +38,6 @@ function makeBuy(overrides: Partial<Transaction>): Transaction {
     date: '2024-01-01',
     notes: null,
     created_at: '2024-01-01T00:00:00Z',
-    currency: 'EUR',
-    price_last_updated_at: null,
-    price_source: null,
     price_currency: 'EUR',
     fee_currency: 'EUR',
     fx_rate_to_eur: 1,
@@ -75,12 +72,12 @@ describe('computePerformanceByCategory', () => {
     // stockA: +50 profit (150-100), stockB: -50 profit (50-100) => net 0
     assert.equal(stockRow.totalProfit, 0)
     assert.equal(stockRow.totalEverInvested, 200)
-    assert.equal(stockRow.totalProfitPct, 0)
+    assert.equal(stockRow.resultVsPurchaseVolumePct, 0)
 
     // etf: +20 profit on 100 invested => +20%
     assert.equal(etfRow.totalProfit, 20)
     assert.equal(etfRow.totalEverInvested, 100)
-    assert.equal(etfRow.totalProfitPct, 0.2)
+    assert.equal(etfRow.resultVsPurchaseVolumePct, 0.2)
   })
 
   test('excludes cash-like holdings from profit, same rule as computePortfolioMetrics', () => {
@@ -112,11 +109,11 @@ describe('computePerformanceByCategory', () => {
     assert.equal(rows.length, 1)
     assert.equal(rows[0].totalProfit, 0)
     assert.equal(rows[0].totalEverInvested, 0)
-    assert.equal(rows[0].totalProfitPct, null)
+    assert.equal(rows[0].resultVsPurchaseVolumePct, null)
   })
 })
 
-describe('computePortfolioMetrics — totalProfitPct denominator', () => {
+describe('computePortfolioMetrics — resultVsPurchaseVolumePct denominator', () => {
   // Regression test for a real bug: totalEverInvested used to sum every
   // investment's deposit/withdrawal history, including cash-like rows —
   // while totalProfit (the numerator) already excluded cash. A cash
@@ -125,7 +122,7 @@ describe('computePortfolioMetrics — totalProfitPct denominator', () => {
   // denominator with zero matching numerator, silently understating the
   // real cost-basis return. Dashboard and Profit/Loss Details both call
   // this same function, so fixing it here fixes both at once.
-  test('a cash row with a long deposit/withdrawal history never dilutes totalProfitPct', () => {
+  test('a cash row with a long deposit/withdrawal history never dilutes resultVsPurchaseVolumePct', () => {
     const stock = makeInvestment({ id: 'a', type: 'stock', current_price: 120 })
     const cash = makeInvestment({ id: 'cash1', type: 'cash', current_value: 50 })
 
@@ -133,7 +130,7 @@ describe('computePortfolioMetrics — totalProfitPct denominator', () => {
       makeBuy({ id: 't1', investment_id: 'a', quantity: 10, price_per_unit: 100 }),
       // A cash account with substantial unrelated deposit/withdrawal churn —
       // none of this is investment capital, so none of it should touch
-      // totalProfitPct's denominator.
+      // resultVsPurchaseVolumePct's denominator.
       makeBuy({ id: 'd1', investment_id: 'cash1', type: 'deposit', quantity: null, price_per_unit: null, amount: 5000 }),
       makeBuy({ id: 'w1', investment_id: 'cash1', type: 'withdraw', quantity: null, price_per_unit: null, amount: 4950 }),
     ]
@@ -145,10 +142,10 @@ describe('computePortfolioMetrics — totalProfitPct denominator', () => {
     // 5000+4950 = 9950 of unrelated deposit/withdrawal history.
     assert.equal(metrics.totalEverInvested, 1000)
     assert.equal(metrics.totalProfit, 200)
-    assert.equal(metrics.totalProfitPct, 0.2)
+    assert.equal(metrics.resultVsPurchaseVolumePct, 0.2)
   })
 
-  test('Dashboard and Profit/Loss Details derive totalProfitPct from the exact same call, so they cannot disagree', () => {
+  test('Dashboard and Profit/Loss Details derive resultVsPurchaseVolumePct from the exact same call, so they cannot disagree', () => {
     // Both pages call computePortfolioMetrics(investments, transactions, fxRates)
     // with the same unfiltered queries — asserting the function is a pure,
     // deterministic computation over its inputs is what actually guarantees
@@ -161,7 +158,7 @@ describe('computePortfolioMetrics — totalProfitPct denominator', () => {
     const dashboardMetrics = computePortfolioMetrics([stock], transactions, { EUR: 1 })
     const profitLossDetailsMetrics = computePortfolioMetrics([stock], transactions, { EUR: 1 })
 
-    assert.equal(dashboardMetrics.totalProfitPct, profitLossDetailsMetrics.totalProfitPct)
+    assert.equal(dashboardMetrics.resultVsPurchaseVolumePct, profitLossDetailsMetrics.resultVsPurchaseVolumePct)
     assert.equal(dashboardMetrics.totalProfit, profitLossDetailsMetrics.totalProfit)
   })
 

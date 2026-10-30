@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { fetchYahooPrice } from '@/lib/domain/yahoo-price'
-import { hasUnits, GRAMS_PER_TROY_OUNCE } from '@/lib/domain/constants'
+import { hasUnits } from '@/lib/domain/constants'
+import { priceForStorage } from '@/lib/domain/price-update'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -50,11 +51,12 @@ export async function POST(
   let currency: string
   try {
     const result = await fetchYahooPrice(ticker)
-    price =
-      investment.type === 'commodity' && investment.quantity_unit === 'gram'
-        ? result.price / GRAMS_PER_TROY_OUNCE
-        : result.price
-    currency = result.currency
+    const checked = priceForStorage(result.price, result.currency, investment)
+    if (!checked.ok) {
+      return NextResponse.json({ error: checked.reason }, { status: 422 })
+    }
+    price = checked.price
+    currency = checked.currency
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Could not fetch price.' },
@@ -67,8 +69,8 @@ export async function POST(
   const { error: updateError } = await supabase
     .from('investments')
     .update({
+      // investments.currency is deliberately NOT updated from Yahoo.
       current_price: price,
-      currency,
       price_last_updated_at: updatedAt,
       price_source: 'yahoo',
       updated_at: updatedAt,

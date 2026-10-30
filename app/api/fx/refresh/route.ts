@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -50,7 +51,9 @@ export async function POST() {
     upserts.push({ currency, eur_per_unit: 1 / perEur, fetched_at: fetchedAt })
   }
 
-  const { error } = await supabase
+  // fx_rates is global data, written only by trusted server code (service
+  // role) after the auth check above — never with the user's own session.
+  const { error } = await createAdminClient()
     .from('fx_rates')
     .upsert(upserts, { onConflict: 'currency' })
 

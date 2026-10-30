@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
 import { ClickableTr } from '@/components/ui/clickable-tr'
@@ -23,12 +24,9 @@ export default async function TransactionsPage() {
   const supabase = await createClient()
 
   const [{ data: transactions, error }, fxRes] = await Promise.all([
-    supabase
-      .from('transactions')
-      .select('*, investment:investments(name, ticker, type, currency)')
-      .order('date', { ascending: false })
-      .order('created_at', { ascending: false })
-      .returns<TxRow[]>(),
+    fetchAllTransactions<TxRow>(supabase, '*, investment:investments(name, ticker, type, currency)', {
+      order: 'date_desc',
+    }),
     loadFxRates(supabase),
   ])
 

@@ -95,12 +95,6 @@ function filterByPreset(points: ChartPoint[], preset: Preset): ChartPoint[] {
   return points.filter((p) => p.date >= cutoff)
 }
 
-function formatAxisDate(date: string): string {
-  return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
-    month: 'short', day: 'numeric',
-  })
-}
-
 function formatLongDate(date: string): string {
   return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
     weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',

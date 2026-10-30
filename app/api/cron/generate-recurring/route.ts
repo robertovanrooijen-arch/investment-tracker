@@ -2,8 +2,10 @@ import { NextResponse } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { fetchAllInvestments } from '@/lib/supabase/fetch-user-data'
 import { loadFxRates } from '@/lib/domain/fx'
-import { hasUnits, GRAMS_PER_TROY_OUNCE } from '@/lib/domain/constants'
+import { hasUnits } from '@/lib/domain/constants'
+import { priceForStorage } from '@/lib/domain/price-update'
 import { fetchYahooPrice } from '@/lib/domain/yahoo-price'
 import { buildGeneratedTransaction } from '@/lib/domain/recurring'
 import type { RecurringTransaction, Investment } from '@/types/database'
@@ -40,11 +42,9 @@ async function processRules(
 
   const investmentIds = [...new Set(rules.map((r) => r.investment_id))]
 
-  const { data: investmentsData, error: invError } = await supabase
-    .from('investments')
-    .select('*')
-    .in('id', investmentIds)
-    .returns<Investment[]>()
+  const { data: investmentsData, error: invError } = await fetchAllInvestments(supabase, '*', {
+    ids: investmentIds,
+  })
 
   if (invError) {
     return {
@@ -92,16 +92,18 @@ async function processRules(
         let refreshed: typeof investment
         try {
           const ticker = investment.ticker.trim()
-          const { price: rawPrice, currency } = await fetchYahooPrice(ticker)
-          const commodityGram =
-            investment.type === 'commodity' && investment.quantity_unit === 'gram'
-          const price = commodityGram ? rawPrice / GRAMS_PER_TROY_OUNCE : rawPrice
+          const quote = await fetchYahooPrice(ticker)
+          // Same validation as every other price write: wrong/unknown
+          // currency is rejected (rule skipped), investments.currency is
+          // never overwritten by Yahoo.
+          const checked = priceForStorage(quote.price, quote.currency, investment)
+          if (!checked.ok) throw new Error(checked.reason)
+          const { price, currency } = checked
           const fetchedAt = new Date().toISOString()
           await supabase
             .from('investments')
             .update({
               current_price: price,
-              currency,
               price_last_updated_at: fetchedAt,
               price_source: 'yahoo',
               updated_at: fetchedAt,

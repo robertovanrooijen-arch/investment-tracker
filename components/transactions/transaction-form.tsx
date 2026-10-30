@@ -1,7 +1,8 @@
 'use client'
 
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { Field } from '@/components/ui/field'
 import { Button } from '@/components/ui/button'
@@ -66,6 +67,12 @@ const AMOUNT_TX_TYPES: TxType[] = [
   'fee',
   'value update',
 ]
+
+function allowedTypesForInvestment(investment: InvestmentOption | null): TxType[] {
+  if (investment?.type === 'commodity') return COMMODITY_TX_TYPES
+  if (investment && UNIT_TYPES.has(investment.type)) return UNIT_TX_TYPES
+  return AMOUNT_TX_TYPES
+}
 
 const TX_LABELS: Record<TxType, string> = {
   buy: 'Buy',
@@ -143,6 +150,11 @@ export function TransactionForm({
   const [isContribution, setIsContribution] = useState<boolean>(
     initial?.is_contribution ?? false
   )
+  // External money in/out is recorded only as a capital flow
+  // (capital_flow_entries). The contribution flag can no longer be SET on a
+  // transaction; it stays visible on legacy rows that already carry it so it
+  // can be unticked once a capital flow replaces it.
+  const legacyContributionFlag = initial?.is_contribution === true
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -168,21 +180,20 @@ export function TransactionForm({
   const isCommodity = selectedInvestment?.type === 'commodity'
   const quantityUnit = selectedInvestment?.quantity_unit ?? null
   const unitLabel = quantityUnit === 'gram' ? 'g' : quantityUnit === 'troy_ounce' ? 'oz' : ''
-  const allowedTypes: TxType[] = isCommodity
-    ? COMMODITY_TX_TYPES
-    : isUnit
-      ? UNIT_TX_TYPES
-      : AMOUNT_TX_TYPES
+  const allowedTypes = allowedTypesForInvestment(selectedInvestment)
 
-  useEffect(() => {
-    if (!selectedInvestment) return
-    if (!allowedTypes.includes(type)) {
-      setType(allowedTypes[0])
+  function handleInvestmentChange(nextInvestmentId: string) {
+    const nextInvestment =
+      investments.find((investment) => investment.id === nextInvestmentId) ?? null
+    const nextAllowedTypes = allowedTypesForInvestment(nextInvestment)
+
+    setInvestmentId(nextInvestmentId)
+    if (!nextAllowedTypes.includes(type)) {
+      setType(nextAllowedTypes[0])
       setInterestMode('fixed')
       setInterestPct('')
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [investmentId])
+  }
 
   const isSell = type === 'sell'
   const isFeeTransaction = type === 'fee'
@@ -327,7 +338,8 @@ export function TransactionForm({
         return
       }
 
-      const showContributionCheckbox = type === 'buy' || type === 'deposit' || type === 'withdraw'
+      const showContributionCheckbox =
+        legacyContributionFlag && (type === 'buy' || type === 'deposit' || type === 'withdraw')
 
       const payload = {
         investment_id:       investmentId,
@@ -427,12 +439,12 @@ export function TransactionForm({
     return (
       <div className="rounded-lg border border-slate-200 bg-white p-6 text-sm text-slate-600">
         You need at least one investment before you can record activity.{' '}
-        <a
+        <Link
           href="/investments/new"
           className="font-medium text-slate-900 underline"
         >
           Create one first
-        </a>
+        </Link>
         .
       </div>
     )
@@ -452,7 +464,7 @@ export function TransactionForm({
             id="investment"
             className={inputClass}
             value={investmentId}
-            onChange={(e) => setInvestmentId(e.target.value)}
+            onChange={(e) => handleInvestmentChange(e.target.value)}
           >
             {investments.map((inv) => (
               <option key={inv.id} value={inv.id}>
@@ -693,7 +705,14 @@ export function TransactionForm({
           </div>
         )}
 
-        {(type === 'buy' || type === 'deposit' || type === 'withdraw') && (
+        {!legacyContributionFlag && (type === 'deposit' || type === 'withdraw') && (
+          <p className="md:col-span-2 text-xs text-slate-500">
+            Money moving between your bank and a platform is recorded as a capital flow under
+            Contributions, not on this transaction.
+          </p>
+        )}
+
+        {legacyContributionFlag && (type === 'buy' || type === 'deposit' || type === 'withdraw') && (
           <div className="md:col-span-2">
             <label className="flex items-start gap-3 cursor-pointer group">
               <input
