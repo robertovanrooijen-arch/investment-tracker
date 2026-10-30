@@ -1,5 +1,6 @@
 import { notFound, redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments } from '@/lib/supabase/fetch-user-data'
 import { PageHeader } from '@/components/ui/page-header'
 import {
   RecurringForm,
@@ -31,14 +32,11 @@ export default async function EditRecurringPage({
         .eq('id', id)
         .eq('user_id', user.id)
         .single<RecurringTransaction>(),
-      supabase
-        .from('investments')
-        .select('id, name, currency, type')
-        .eq('user_id', user.id)
-        .order('name', { ascending: true })
-        .returns<
-          Array<{ id: string; name: string; currency: string; type: InvestmentType }>
-        >(),
+      fetchAllInvestments<{ id: string; name: string; currency: string; type: InvestmentType }>(
+        supabase,
+        'id, name, currency, type',
+        { userId: user.id, order: 'name' }
+      ),
     ])
 
   if (ruleError || !rule) notFound()

@@ -77,9 +77,8 @@ export type Transaction = {
   date: string
   notes: string | null
   created_at: string
-  currency: string
-  price_last_updated_at: string | null
-  price_source: string | null
+  // NOTE: transactions has no currency / price_last_updated_at / price_source
+  // columns in the live database; the trade currency is price_currency.
   // Phase 1 (mixed-currency support):
   // - For backfilled rows, price_currency and fee_currency equal the
   //   investment's currency (single-currency assumption preserved).
@@ -96,6 +95,18 @@ export type Transaction = {
   // money entering the portfolio (not a reinvestment or reallocation).
   is_contribution: boolean
   contribution_source: string | null
+  // Import provenance (scripts/add-transaction-source-external-id.sql, live).
+  // Optional in the type because older fixtures/selects omit them; NULL for
+  // manually entered rows. A row with external_id is an imported row and is
+  // never treated as an external contribution.
+  source?: string | null
+  external_id?: string | null
+  source_datetime?: string | null
+  // Value date of an income row when it differs from the booking date
+  // (`date`), e.g. a dividend with value date 31-12 booked on 02-01. Income
+  // and year analysis use the value date; cash and TWR use the booking date.
+  // Column added by migration M9; absent before that.
+  value_date?: string | null
 }
 
 export type FxRate = {
@@ -186,4 +197,24 @@ export type CapitalFlowEntry = {
   source: string | null
   notes: string | null
   created_at: string
+  // Proposed by the pending migration (NOT yet in the live database). Optional
+  // so the app works identically before and after it is applied; pages select
+  // '*' so these appear automatically once the columns exist.
+  external_id?: string | null
+  source_datetime?: string | null
+  flow_kind?: CapitalFlowKind | null
+  linked_transaction_id?: string | null
 }
+
+export type CapitalFlowKind =
+  | 'bank_deposit'
+  | 'bank_withdrawal'
+  | 'savings_plan'
+  | 'saveback'
+  | 'round_up'
+  | 'order_payment'
+  | 'sale_payout'
+  | 'other'
+  // Amount and direction are certain; the economic label is not yet known
+  // (e.g. a Trade Republic savings-plan execution without visible funding).
+  | 'pending_classification'

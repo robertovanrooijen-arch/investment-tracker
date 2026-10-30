@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { fetchAllInvestments } from '@/lib/supabase/fetch-user-data'
 import {
   refreshFxRatesGlobal,
   refreshPortfolioForUser,
@@ -20,6 +21,8 @@ type UserSummary = {
   }
   snapshot_written?: boolean
   investment_snapshots_upserted?: number
+  price_status?: Record<string, number>
+  skipped_incomplete_snapshots?: number
 }
 
 // Vercel Cron sends GET. POST is allowed too so you can curl it manually.
@@ -51,9 +54,11 @@ async function handle(req: Request) {
   const fxResult = await refreshFxRatesGlobal(supabase)
 
   // 3. List distinct user IDs that have at least one investment (option B).
-  const { data: invRows, error: listError } = await supabase
-    .from('investments')
-    .select('user_id')
+  //    Paginated: every user must be reached, not only the first 1000 rows.
+  const { data: invRows, error: listError } = await fetchAllInvestments<{ user_id: string }>(
+    supabase,
+    'user_id'
+  )
 
   if (listError) {
     return NextResponse.json(
@@ -77,7 +82,8 @@ async function handle(req: Request) {
       const result = await refreshPortfolioForUser(supabase, userId, 'cron')
       summaries.push({
         user_id: userId,
-        ok: true,
+        ok: result.quality === 'complete',
+        error: result.quality === 'complete' ? undefined : result.snapshotError ?? undefined,
         prices: {
           total: result.prices.total,
           successful: result.prices.successful,
@@ -86,6 +92,8 @@ async function handle(req: Request) {
         },
         snapshot_written: !!result.snapshot,
         investment_snapshots_upserted: result.investmentSnapshots.upserted,
+        price_status: result.priceStatusCounts,
+        skipped_incomplete_snapshots: result.skippedIncompleteSnapshots,
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error'

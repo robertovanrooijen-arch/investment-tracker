@@ -1,9 +1,9 @@
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { PageHeader } from '@/components/ui/page-header'
 import { ProjectionCalculator } from '@/components/tools/projection-calculator'
 import { computePortfolioMetrics } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
-import type { Investment, Transaction } from '@/types/database'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,8 +11,8 @@ export default async function ProjectionPage() {
   const supabase = await createClient()
 
   const [invRes, txRes, fxRes] = await Promise.all([
-    supabase.from('investments').select('*').returns<Investment[]>(),
-    supabase.from('transactions').select('*').returns<Transaction[]>(),
+    fetchAllInvestments(supabase),
+    fetchAllTransactions(supabase),
     loadFxRates(supabase),
   ])
 

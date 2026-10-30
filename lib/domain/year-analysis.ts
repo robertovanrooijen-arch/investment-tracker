@@ -4,13 +4,22 @@ export { isCashLikeInvestment }
 import type { FxRates } from '@/lib/domain/fx'
 import {
   computeInvestmentMetrics,
-  computePortfolioMetrics,
+  currentRateToEur,
+  incomeDate,
+  isIncomeTransaction,
   txAmountInEur,
   txFeeInEur,
   txFeeInPriceCurrency,
+  txIncomeInEur,
+  txNativeToEur,
 } from '@/lib/domain/calculations'
 import type { PortfolioMetrics } from '@/lib/domain/calculations'
-import { txToContribRow } from '@/lib/domain/contributions'
+import { buildExternalCashFlowRows } from '@/lib/domain/contributions'
+import { deriveAvailableYears } from '@/lib/domain/available-years'
+import { allocateSale, isEffectivelyZero } from '@/lib/domain/cost-basis'
+import { tradeGrossNative } from '@/lib/domain/trade-amounts'
+import { modifiedDietz } from '@/lib/domain/returns'
+import { CURRENT_PL_DEFINITION_VERSION, plDefinitionVersionOf } from '@/lib/domain/snapshot-method'
 import { money } from '@/lib/format'
 
 // ---------------------------------------------------------------------------
@@ -40,6 +49,22 @@ function sortChronologically(txs: Transaction[]): Transaction[] {
   })
 }
 
+// FAIL-CLOSED sum: a row whose EUR figure is unknown (NaN because an FX rate
+// is missing) makes the total unknown too — shown as '—', never as a
+// believable-but-too-low partial sum. Such rows are flagged via
+// AssetYearRow.fxIncomplete / YearPortfolioSummary.fxIncompleteCount.
+function sumAll<T>(rows: T[], pick: (row: T) => number): number {
+  let total = 0
+  for (const row of rows) total += pick(row)
+  return total
+}
+
+// null means "not applicable" (e.g. cash-like rows) and counts as 0; NaN
+// (unknown) is kept so it propagates.
+function nullAs0(v: number | null): number {
+  return v === null ? 0 : v
+}
+
 function inYear(date: string, year: number): boolean {
   return date >= `${year}-01-01` && date <= `${year}-12-31`
 }
@@ -55,6 +80,7 @@ function todayIso(): string {
  */
 function safePercent(numerator: number | null, denominator: number | null): number | null {
   if (numerator === null || denominator === null) return null
+  if (!Number.isFinite(numerator)) return null
   if (!Number.isFinite(denominator) || Math.abs(denominator) < 0.01) return null
   return (numerator / denominator) * 100
 }
@@ -75,13 +101,35 @@ function closingCutoffDate(year: number): string {
  * Years to offer in the year selector: every year with at least one
  * transaction, plus the current year (always available, even if empty).
  */
-export function getAvailableYears(transactions: Transaction[]): number[] {
-  const years = new Set<number>([new Date().getFullYear()])
-  for (const tx of transactions) {
-    const y = Number(tx.date.slice(0, 4))
-    if (Number.isFinite(y)) years.add(y)
-  }
-  return Array.from(years).sort((a, b) => b - a)
+export function getAvailableYears(
+  transactions: Transaction[],
+  // Other dated data that makes a year worth offering: capital flow dates and
+  // portfolio snapshot dates. Never a hardcoded year list.
+  extraDates: Iterable<string | null | undefined> = []
+): number[] {
+  const dates = [...transactions.map((tx) => tx.date), ...extraDates]
+  return deriveAvailableYears(dates).sort((a, b) => b - a)
+}
+
+// ---------- Data-quality markers (instead of hardcoded years/dates) ----------
+
+/**
+ * Capital flows whose source marks them as estimates (e.g. amounts spread
+ * evenly over months) rather than dated bank/broker records. Their totals may
+ * be right while their timing is not, so time-weighted returns for that year
+ * are indicative only.
+ */
+export function isEstimatedCapitalFlowSource(source: string | null | undefined): boolean {
+  return !!source && /even_monthly|estimate|bulk/i.test(source)
+}
+
+/**
+ * Snapshot sources written by the app's own live refresh/cron. Anything else
+ * (annual imports, statement-backed or corrected rows) lacks the live
+ * per-field breakdown, so P/L bridges starting from it are approximate.
+ */
+export function isLiveSnapshotSource(source: string | null | undefined): boolean {
+  return source === 'cron' || source === 'manual_refresh'
 }
 
 // ---------- Per-asset year row ----------
@@ -123,6 +171,9 @@ export type AssetYearRow = {
   totalPLPercent: number | null
   unrealizedPLPercent: number | null
   realizedPLPercentInYear: number | null
+  // True when an EUR figure on this row is unknown (NaN) because an FX rate
+  // is missing; such figures are excluded from every total.
+  fxIncomplete: boolean
 }
 
 type ReplayResult = {
@@ -151,11 +202,10 @@ type ReplayResult = {
 // Mirrors calculations.ts's private txNativeToEur, applied to an
 // already-computed gross native amount (buy/sell math needs the gross figure
 // before/after fee separately, so txAmountInEur alone isn't enough here).
+// Delegates to the shared FX policy (calculations.ts): historical row rate,
+// never today's rate for an imported row, never a silent 1 (NaN = missing).
 function grossToEur(grossNative: number, tx: Transaction, fxRates?: FxRates): number {
-  const priceCurrency = tx.price_currency ?? 'EUR'
-  if (priceCurrency === 'EUR') return grossNative
-  const rate = tx.fx_rate_to_eur ?? fxRates?.[priceCurrency] ?? 1
-  return grossNative * rate
+  return txNativeToEur(grossNative, tx, fxRates)
 }
 
 /**
@@ -172,7 +222,9 @@ function replayInvestment(
 ): ReplayResult {
   const cutoff = closingCutoffDate(year)
   const txs = sortChronologically(
-    transactions.filter((t) => t.investment_id === investment.id && t.date <= cutoff)
+    transactions.filter(
+      (t) => t.investment_id === investment.id && (isIncomeTransaction(t) ? incomeDate(t) : t.date) <= cutoff
+    )
   )
 
   const result: ReplayResult = {
@@ -201,7 +253,8 @@ function replayInvestment(
       if (txInYear) result.hasActivityInYear = true
 
       if (tx.type === 'buy' && tx.quantity !== null && tx.price_per_unit !== null) {
-        const grossNative = tx.quantity * tx.price_per_unit
+        // Exact broker/invoice amount where the source defines it.
+        const grossNative = tradeGrossNative(tx)
         const feeNative = txFeeInPriceCurrency(tx, fxRates)
         const costNative = grossNative + feeNative
 
@@ -219,22 +272,26 @@ function replayInvestment(
           result.feesPaidInYearEur += feeEur
         }
       } else if (tx.type === 'sell' && tx.quantity !== null && tx.price_per_unit !== null) {
-        const sellQty = Math.min(tx.quantity, sharesHeld)
-        if (sharesHeld > 0 && sellQty > 0) {
-          const avgCostNative = costBasisNative / sharesHeld
-          const avgCostEur = costBasisEur / sharesHeld
-          const soldCostNative = avgCostNative * sellQty
-          const soldCostEur = avgCostEur * sellQty
+        // Same cost-basis rules as computeInvestmentMetrics (cost-basis.ts).
+        const sale = allocateSale(sharesHeld, costBasisNative, costBasisEur, tx.quantity)
+        if (sale) {
+          const sellQty = sale.quantity
+          const soldCostEur = sale.soldCostEur
 
-          const grossNative = sellQty * tx.price_per_unit
+          const grossNative = tradeGrossNative(tx, sale.fractionOfRow)
           const grossEur = grossToEur(grossNative, tx, fxRates)
-          const feeEur = txFeeInEur(tx, fxRates)
+          const feeEur = txFeeInEur(tx, fxRates) * sale.fractionOfRow
           const proceedsEur = grossEur - feeEur
 
           const realizedEur = proceedsEur - soldCostEur
-          costBasisNative -= soldCostNative
+          costBasisNative -= sale.soldCostNative
           costBasisEur -= soldCostEur
           sharesHeld -= sellQty
+          if (sale.closesPosition) {
+            sharesHeld = 0
+            costBasisNative = 0
+            costBasisEur = 0
+          }
 
           if (txInYear) {
             result.quantitySoldInYear += sellQty
@@ -250,13 +307,21 @@ function replayInvestment(
           result.feesPaidInYearEur += amtEur
           result.realizedPLInYearEur -= amtEur
         }
-      } else if (tx.type === 'dividend' || tx.type === 'interest') {
-        if (txInYear) {
-          result.dividendsInterestInYearEur += txAmountInEur(tx, fxRates)
+      } else if (isIncomeTransaction(tx)) {
+        // Same net income as computeInvestmentMetrics: realized P/L gets the
+        // net amount; dividendsInterestInYearEur stays the gross figure for
+        // display only and is never added to P/L a second time. Income
+        // belongs to the year of its value date (see incomeDate).
+        if (inYear(incomeDate(tx), year)) {
+          const income = txIncomeInEur(tx, fxRates)
+          result.dividendsInterestInYearEur += income.grossEur
+          result.feesPaidInYearEur += income.feeEur
+          result.realizedPLInYearEur += income.netEur
         }
       }
     }
 
+    if (isEffectivelyZero(sharesHeld)) sharesHeld = 0
     result.closingQuantity = sharesHeld
     result.closingCostBasisNative = sharesHeld > 0 ? costBasisNative : 0
     result.closingCostBasisEur = sharesHeld > 0 ? costBasisEur : 0
@@ -279,11 +344,12 @@ function replayInvestment(
           result.amountSoldInYearEur += txAmountInEur(tx, fxRates)
           result.feesPaidInYearEur += txFeeInEur(tx, fxRates)
         }
-      } else if (tx.type === 'interest' || tx.type === 'dividend') {
-        if (txInYear) {
-          const amtEur = txAmountInEur(tx, fxRates)
-          result.dividendsInterestInYearEur += amtEur
-          result.realizedPLInYearEur += amtEur
+      } else if (isIncomeTransaction(tx)) {
+        if (inYear(incomeDate(tx), year)) {
+          const income = txIncomeInEur(tx, fxRates)
+          result.dividendsInterestInYearEur += income.grossEur
+          result.feesPaidInYearEur += income.feeEur
+          result.realizedPLInYearEur += income.netEur
         }
       } else if (tx.type === 'fee') {
         if (txInYear) {
@@ -323,7 +389,7 @@ export function computeAssetYearRows(
       currentQuantity = qty
       const priceCurrency = inv.currency ?? 'EUR'
       const priceNative = inv.current_price ?? 0
-      const rateToEur = fxRates?.[priceCurrency] ?? 1
+      const rateToEur = currentRateToEur(priceCurrency, fxRates) ?? NaN
       currentValueEur = qty > 0 ? qty * priceNative * rateToEur : 0
       averageBuyPriceNative =
         qty > 0 && replay.closingCostBasisNative !== null
@@ -391,10 +457,20 @@ export function computeAssetYearRows(
       realizedPLPercentInYear: cashLike
         ? null
         : safePercent(replay.realizedPLInYearEur, costBasisSoldInYearEur),
+      fxIncomplete: ![
+        replay.amountBoughtInYearEur,
+        replay.amountSoldInYearEur,
+        replay.dividendsInterestInYearEur,
+        replay.feesPaidInYearEur,
+        replay.realizedPLInYearEur,
+        currentValueEur,
+        currentUnrealizedPLEur ?? 0,
+        remainingCostBasisEur ?? 0,
+      ].every(Number.isFinite),
     })
   }
 
-  const totalValueEur = rows.reduce((s, r) => s + r.currentValueEur, 0)
+  const totalValueEur = sumAll(rows, (r) => r.currentValueEur)
   for (const row of rows) {
     row.portfolioWeightPct = totalValueEur > 0 ? (row.currentValueEur / totalValueEur) * 100 : null
   }
@@ -457,6 +533,8 @@ function ytdPeriodEndIso(year: number): string {
 // "YTD by asset class" chart) and does NOT touch computeModifiedDietzReturnPercent
 // or safePercent themselves, so the main Year Analysis / Dashboard figures
 // are unaffected.
+export const YTD_FX_UNAVAILABLE_REASON = 'YTD unavailable: an FX rate is missing for this position.'
+
 export const YTD_PERCENT_UNAVAILABLE_REASON =
   'YTD % unavailable: no meaningful capital base for a percentage return. EUR result is still shown.'
 
@@ -604,8 +682,8 @@ export function computeInvestmentYtdRows(
       startValueEur = null
     } else if (inv.current_price !== null) {
       const priceCurrency = inv.currency ?? 'EUR'
-      const rateToEur = fxRates?.[priceCurrency] ?? 1
-      startValueEur = startQty * inv.current_price * rateToEur
+      const rateToEur = currentRateToEur(priceCurrency, fxRates)
+      startValueEur = rateToEur === null ? null : startQty * inv.current_price * rateToEur
       isApproximate = true
     } else {
       startValueEur = null
@@ -619,23 +697,32 @@ export function computeInvestmentYtdRows(
       )
     }
 
-    const datedFlows: DatedCashFlow[] = sortChronologically(
+    // Position-level flows: buys put money in, sells take it out. Net
+    // dividend/interest paid out of the position is also money leaving it
+    // (so it counts as growth, matching realized P/L elsewhere), and a
+    // separate 'fee' row (e.g. dividend tax) is money paid in.
+    const datedFlows: DatedCashFlow[] = []
+    for (const t of sortChronologically(
       transactions.filter((t) => t.investment_id === inv.id && inYear(t.date, year))
-    )
-      .filter(
-        (t) =>
-          (t.type === 'buy' || t.type === 'sell') && t.quantity !== null && t.price_per_unit !== null
-      )
-      .map((t) => {
-        const grossNative = (t.quantity as number) * (t.price_per_unit as number)
+    )) {
+      if ((t.type === 'buy' || t.type === 'sell') && t.quantity !== null && t.price_per_unit !== null) {
+        const grossNative = tradeGrossNative(t)
         const grossEur = grossToEur(grossNative, t, fxRates)
         const feeEur = txFeeInEur(t, fxRates)
         const amountEur = t.type === 'buy' ? grossEur + feeEur : -(grossEur - feeEur)
-        return { date: t.date, amountEur }
-      })
+        datedFlows.push({ date: t.date, amountEur })
+      } else if (isIncomeTransaction(t)) {
+        datedFlows.push({ date: t.date, amountEur: -txIncomeInEur(t, fxRates).netEur })
+      } else if (t.type === 'fee') {
+        datedFlows.push({ date: t.date, amountEur: txAmountInEur(t, fxRates) })
+      }
+    }
 
     const netFlow = datedFlows.reduce((s, f) => s + f.amountEur, 0)
     const ytdGrowthEur = row.currentValueEur - startValueEur - netFlow
+    if (!Number.isFinite(ytdGrowthEur)) {
+      return unavailable(inv.id, YTD_FX_UNAVAILABLE_REASON)
+    }
     const percentMeaningful = ytdPercentIsMeaningful(
       startValueEur,
       row.currentValueEur,
@@ -670,13 +757,18 @@ export function combineInvestmentYtd(
   rows: InvestmentYtdRow[],
   year: number
 ): { growthEur: number | null; returnPercent: number | null; percentUnavailableReason: string | null } {
+  // Fail-closed: a position whose YTD is unknown only because of a missing FX
+  // rate makes the combined figure unknown too (never a partial combination).
+  if (rows.some((r) => r.unavailableReason === YTD_FX_UNAVAILABLE_REASON)) {
+    return { growthEur: null, returnPercent: null, percentUnavailableReason: YTD_FX_UNAVAILABLE_REASON }
+  }
   const usable = rows.filter((r) => r.startValueEur !== null && r.currentValueEur !== null)
   if (usable.length === 0) return { growthEur: null, returnPercent: null, percentUnavailableReason: null }
 
-  const startValueEur = usable.reduce((s, r) => s + (r.startValueEur ?? 0), 0)
-  const currentValueEur = usable.reduce((s, r) => s + (r.currentValueEur ?? 0), 0)
+  const startValueEur = sumAll(usable, (r) => nullAs0(r.startValueEur))
+  const currentValueEur = sumAll(usable, (r) => nullAs0(r.currentValueEur))
   const datedFlows = usable.flatMap((r) => r.datedFlows)
-  const growthEur = usable.reduce((s, r) => s + (r.ytdGrowthEur ?? 0), 0)
+  const growthEur = sumAll(usable, (r) => nullAs0(r.ytdGrowthEur))
 
   const periodStart = `${year}-01-01`
   const periodEnd = ytdPeriodEndIso(year)
@@ -768,7 +860,7 @@ export type AssetClassSummary = {
 }
 
 export function computeAssetClassSummaries(assetRows: AssetYearRow[]): AssetClassSummary[] {
-  const totalValue = assetRows.reduce((s, r) => s + r.currentValueEur, 0)
+  const totalValue = sumAll(assetRows, (r) => r.currentValueEur)
 
   const byType = new Map<InvestmentType, AssetYearRow[]>()
   for (const row of assetRows) {
@@ -780,31 +872,31 @@ export function computeAssetClassSummaries(assetRows: AssetYearRow[]): AssetClas
   const summaries: AssetClassSummary[] = []
   for (const [type, rows] of byType) {
     const isCashClass = type === 'cash'
-    const currentValueEur = rows.reduce((s, r) => s + r.currentValueEur, 0)
+    const currentValueEur = sumAll(rows, (r) => r.currentValueEur)
     const nonCashRows = rows.filter((r) => !r.isCashLike)
 
-    const realizedPLInYearEur = isCashClass ? null : rows.reduce((s, r) => s + r.realizedPLInYearEur, 0)
+    const realizedPLInYearEur = isCashClass ? null : sumAll(rows, (r) => r.realizedPLInYearEur)
     const currentUnrealizedPLEur =
       !isCashClass && nonCashRows.length > 0
-        ? nonCashRows.reduce((s, r) => s + (r.currentUnrealizedPLEur ?? 0), 0)
+        ? sumAll(nonCashRows, (r) => nullAs0(r.currentUnrealizedPLEur))
         : null
     const totalPLEur =
       realizedPLInYearEur !== null ? realizedPLInYearEur + (currentUnrealizedPLEur ?? 0) : null
-    const costBasisEur = nonCashRows.reduce((s, r) => s + (r.remainingCostBasisEur ?? 0), 0)
+    const costBasisEur = sumAll(nonCashRows, (r) => nullAs0(r.remainingCostBasisEur))
 
     summaries.push({
       type,
       isCashClass,
       currentValueEur,
       pctOfPortfolio: totalValue > 0 ? (currentValueEur / totalValue) * 100 : 0,
-      amountBoughtInYearEur: rows.reduce((s, r) => s + r.amountBoughtInYearEur, 0),
-      amountSoldInYearEur: rows.reduce((s, r) => s + r.amountSoldInYearEur, 0),
+      amountBoughtInYearEur: sumAll(rows, (r) => r.amountBoughtInYearEur),
+      amountSoldInYearEur: sumAll(rows, (r) => r.amountSoldInYearEur),
       realizedPLInYearEur,
       currentUnrealizedPLEur,
       totalPLEur,
       totalPLPercent: isCashClass ? null : safePercent(totalPLEur, costBasisEur > 0 ? costBasisEur : null),
-      feesPaidInYearEur: rows.reduce((s, r) => s + r.feesPaidInYearEur, 0),
-      dividendsInterestInYearEur: rows.reduce((s, r) => s + r.dividendsInterestInYearEur, 0),
+      feesPaidInYearEur: sumAll(rows, (r) => r.feesPaidInYearEur),
+      dividendsInterestInYearEur: sumAll(rows, (r) => r.dividendsInterestInYearEur),
     })
   }
 
@@ -899,6 +991,12 @@ export type YearPortfolioSummary = {
   // split out for the reconciliation audit's cashflow classification check.
   grossContributionsInEur: number
   grossContributionsOutEur: number // positive number = money that left
+  // Asset rows whose EUR figures are partly unknown (missing FX). When > 0
+  // the affected totals above are NaN (unknown), never a partial sum.
+  fxIncompleteCount: number
+  // Legacy is_contribution transactions in this year whose EUR amount is
+  // unknown (missing FX). When > 0 contribution totals/returns are unknown.
+  legacyContributionsSkippedFx: number
 }
 
 export type MonthlyCashflowRow = {
@@ -917,6 +1015,11 @@ export type CapitalFlowEntryForYear = {
   flow_date: string
   direction: CapitalFlowDirection
   amount_eur: number
+  // Present only after the pending capital_flow_entries migration; links a
+  // capital flow to the legacy is_contribution transaction it replaces.
+  linked_transaction_id?: string | null
+  // Provenance label (existing column); used to flag estimated flows.
+  source?: string | null
 }
 
 // A single dated external cash movement — positive means money entered the
@@ -943,27 +1046,8 @@ function computeModifiedDietzReturnPercent(
   periodStartIso: string,
   periodEndIso: string
 ): number | null {
-  if (startValueEur === null) return null
-
-  const periodStart = new Date(periodStartIso).getTime()
-  const periodEnd = new Date(periodEndIso).getTime()
-  const totalDays = (periodEnd - periodStart) / MS_PER_DAY
-  if (!Number.isFinite(totalDays) || totalDays <= 0) return null
-
-  let netCashFlow = 0
-  let weightedCashFlow = 0
-  for (const flow of cashFlows) {
-    const flowTime = new Date(flow.date).getTime()
-    if (!Number.isFinite(flowTime)) continue
-    netCashFlow += flow.amountEur
-    const daysSinceStart = Math.min(Math.max((flowTime - periodStart) / MS_PER_DAY, 0), totalDays)
-    const weight = (totalDays - daysSinceStart) / totalDays
-    weightedCashFlow += flow.amountEur * weight
-  }
-
-  const numerator = endValueEur - startValueEur - netCashFlow
-  const denominator = startValueEur + weightedCashFlow
-  return safePercent(numerator, denominator)
+  // Single implementation, shared with the rest of the app (returns.ts).
+  return modifiedDietz(startValueEur, endValueEur, cashFlows, periodStartIso, periodEndIso).returnPercent
 }
 
 // Builds the exact list of dated external cash flows for `year` — same
@@ -977,24 +1061,20 @@ function buildYearCashFlows(
   capitalFlowEntries: CapitalFlowEntryForYear[],
   transactions: Transaction[]
 ): DatedCashFlow[] {
-  const flows: DatedCashFlow[] = []
-  const ledgerRows = capitalFlowEntries.filter((e) => e.year === year)
-  for (const e of ledgerRows) {
-    flows.push({
-      date: e.flow_date,
-      amountEur: e.direction === 'to_portfolio' ? e.amount_eur : -e.amount_eur,
-    })
-  }
-  for (const tx of transactions) {
-    if (!tx.is_contribution || !inYear(tx.date, year)) continue
-    const row = txToContribRow(tx as Parameters<typeof txToContribRow>[0])
-    if (!row) continue
-    flows.push({
-      date: tx.date,
-      amountEur: row.direction === 'to_portfolio' ? row.amount_eur : -row.amount_eur,
-    })
-  }
-  return flows
+  // Same single definition as the Contributions page (see
+  // buildExternalCashFlowRows): capital_flow_entries, plus legacy
+  // is_contribution transactions only until a capital flow links to them.
+  // Built over ALL rows first so a link is honoured regardless of year.
+  // A legacy contribution whose EUR amount is unknown (missing FX) is kept as
+  // a NaN flow: every total it touches becomes unknown (fail-closed) instead
+  // of the year silently showing less contributed money.
+  const { rows, fxMissingRows } = buildExternalCashFlowRows(capitalFlowEntries, transactions)
+  return [...rows, ...fxMissingRows]
+    .filter((r) => r.year === year)
+    .map((r) => ({
+      date: r.flow_date,
+      amountEur: r.direction === 'to_portfolio' ? r.amount_eur : -r.amount_eur,
+    }))
 }
 
 export function computeYearPortfolioSummary(
@@ -1051,12 +1131,15 @@ export function computeYearPortfolioSummary(
   // Dietz return below — no separate, potentially-inconsistent date lookup.
   const yearCashFlows = buildYearCashFlows(year, capitalFlowEntries, transactions)
   const netContributionsEur = yearCashFlows.reduce((s, f) => s + f.amountEur, 0)
-  const grossContributionsInEur = yearCashFlows
-    .filter((f) => f.amountEur > 0)
-    .reduce((s, f) => s + f.amountEur, 0)
-  const grossContributionsOutEur = yearCashFlows
-    .filter((f) => f.amountEur < 0)
-    .reduce((s, f) => s - f.amountEur, 0)
+  const legacyContributionsSkippedFx = yearCashFlows.filter((f) => Number.isNaN(f.amountEur)).length
+  const grossContributionsInEur =
+    legacyContributionsSkippedFx > 0
+      ? NaN
+      : yearCashFlows.filter((f) => f.amountEur > 0).reduce((s, f) => s + f.amountEur, 0)
+  const grossContributionsOutEur =
+    legacyContributionsSkippedFx > 0
+      ? NaN
+      : yearCashFlows.filter((f) => f.amountEur < 0).reduce((s, f) => s - f.amountEur, 0)
 
   // Monthly bucketing of the exact same yearCashFlows list above — same
   // source data as netContributionsEur, just grouped by month instead of
@@ -1080,15 +1163,15 @@ export function computeYearPortfolioSummary(
   // investment" — excluded here so this figure isn't inflated by topping up
   // a cash balance. Fees and dividends/interest are legitimate either way.
   const investedRows = assetRows.filter((r) => !r.isCashLike)
-  const totalBuysEur = investedRows.reduce((s, r) => s + r.amountBoughtInYearEur, 0)
-  const totalSellsEur = investedRows.reduce((s, r) => s + r.amountSoldInYearEur, 0)
-  const dividendsInterestEur = assetRows.reduce((s, r) => s + r.dividendsInterestInYearEur, 0)
-  const feesPaidEur = assetRows.reduce((s, r) => s + r.feesPaidInYearEur, 0)
-  const realizedPLInYearEur = assetRows.reduce((s, r) => s + r.realizedPLInYearEur, 0)
+  const totalBuysEur = sumAll(investedRows, (r) => r.amountBoughtInYearEur)
+  const totalSellsEur = sumAll(investedRows, (r) => r.amountSoldInYearEur)
+  const dividendsInterestEur = sumAll(assetRows, (r) => r.dividendsInterestInYearEur)
+  const feesPaidEur = sumAll(assetRows, (r) => r.feesPaidInYearEur)
+  const realizedPLInYearEur = sumAll(assetRows, (r) => r.realizedPLInYearEur)
   // Cash-like rows contribute null (excluded, not treated as 0-loss).
   const currentUnrealizedPLEur = assetRows
     .filter((r) => !r.isCashLike)
-    .reduce((s, r) => s + (r.currentUnrealizedPLEur ?? 0), 0)
+    .reduce((s, r) => s + nullAs0(r.currentUnrealizedPLEur), 0)
   const totalPLEur = realizedPLInYearEur + currentUnrealizedPLEur
 
   // Percentage metrics — all denominated against start-of-year value, so all
@@ -1119,7 +1202,7 @@ export function computeYearPortfolioSummary(
   // totalProfitLossPercent. A closed-out position contributes 0.
   const totalCostBasisEur = assetRows
     .filter((r) => !r.isCashLike)
-    .reduce((s, r) => s + (r.remainingCostBasisEur ?? 0), 0)
+    .reduce((s, r) => s + nullAs0(r.remainingCostBasisEur), 0)
   const totalProfitLossPercent = safePercent(totalPLEur, totalCostBasisEur > 0 ? totalCostBasisEur : null)
 
   return {
@@ -1149,6 +1232,8 @@ export function computeYearPortfolioSummary(
     monthlyCashflow,
     grossContributionsInEur,
     grossContributionsOutEur,
+    fxIncompleteCount: assetRows.filter((r) => r.fxIncomplete).length,
+    legacyContributionsSkippedFx,
   }
 }
 
@@ -1550,6 +1635,10 @@ export type SnapshotForAudit = {
   // updated_at alone doesn't prove those fields were verified — see
   // VALUE_ONLY_CORRECTION_MARKER below.
   snapshot_source: string | null
+  // P/L definition the row was computed with (absent/null → v1, see
+  // lib/domain/snapshot-method.ts). A start snapshot on another version than
+  // the live total cannot be bridged exactly.
+  pl_definition_version?: number | null
 }
 
 function auditStatus(diff: number | null, tolerance = 1): AuditStatus {
@@ -1654,6 +1743,9 @@ export function computeReconciliationAudit(
   const startSnapValueOnlyCorrected =
     startSnap !== null && (startSnap.snapshot_source ?? '').includes(VALUE_ONLY_CORRECTION_MARKER)
 
+  const startSnapOtherPlDefinition =
+    startSnap !== null && plDefinitionVersionOf(startSnap) !== CURRENT_PL_DEFINITION_VERSION
+
   const profitLossBridge: AuditCheck = {
     title: 'Profit/Loss bridge — start snapshot vs live Dashboard/History P/L',
     rows: [
@@ -1666,7 +1758,9 @@ export function computeReconciliationAudit(
                 ? ' — value corrected from official statements; P/L fields not reconstructed'
                 : startSnapPreDatesCashFix
                   ? ' — written before the cash-exclusion fix'
-                  : ''
+                  : startSnapOtherPlDefinition
+                    ? ` — P/L definition v${plDefinitionVersionOf(startSnap)} (live is v${CURRENT_PL_DEFINITION_VERSION})`
+                    : ''
             }`
           : 'no snapshot with a realized/unrealized breakdown found',
       },
@@ -1683,17 +1777,19 @@ export function computeReconciliationAudit(
     status:
       startTotalProfitLoss === null
         ? 'unavailable'
-        : startSnapValueOnlyCorrected || startSnapPreDatesCashFix
+        : startSnapValueOnlyCorrected || startSnapPreDatesCashFix || startSnapOtherPlDefinition
           ? 'approximate'
           : auditStatus(plBridgeDiff),
     explanation:
       startTotalProfitLoss === null
         ? 'No start-of-year snapshot with a realized/unrealized breakdown — cannot bridge P/L.'
         : startSnapValueOnlyCorrected
-          ? 'Start value corrected from official platform statements. Historical snapshot P/L fields for 2025-12-31 are not fully reconstructed.'
+          ? `Start value corrected from official platform statements. Historical snapshot P/L fields for ${startSnap?.date ?? 'the start date'} are not fully reconstructed.`
           : startSnapPreDatesCashFix
             ? 'Start snapshot uses the old P/L definition; backfill needed for a reliable P/L change. It was written before the cash-exclusion fix, so it may still count a cash balance as profit while the live total (right) now correctly excludes it — "P/L change this year" is not reliable until historical snapshots are backfilled under the new definition.'
-            : 'Validates that Dashboard/History\'s own snapshot-vs-live bookkeeping is internally consistent — both sides now use the same cash-excluded P/L definition.',
+            : startSnapOtherPlDefinition
+              ? `P/L method change: the start snapshot uses P/L definition v${plDefinitionVersionOf(startSnap)} (dividend/interest on holdings not counted as realized), the live total uses v${CURRENT_PL_DEFINITION_VERSION} (counted, net of tax). Part of "P/L change this year" is that method change, not performance.`
+              : 'Validates that Dashboard/History\'s own snapshot-vs-live bookkeeping is internally consistent — both sides now use the same cash-excluded P/L definition.',
   }
 
   // ---------- 3. Current P/L consistency: Dashboard/History vs Year Analysis (non-cash) ----------
@@ -1757,10 +1853,10 @@ export function computeReconciliationAudit(
   // ---------- 5. Cashflow classification audit ----------
   const nonCashRows = assetRows.filter((r) => !r.isCashLike)
   const cashRows = assetRows.filter((r) => r.isCashLike)
-  const internalBuys = nonCashRows.reduce((s, r) => s + r.amountBoughtInYearEur, 0)
-  const internalSells = nonCashRows.reduce((s, r) => s + r.amountSoldInYearEur, 0)
-  const cashMovementIn = cashRows.reduce((s, r) => s + r.amountBoughtInYearEur, 0)
-  const cashMovementOut = cashRows.reduce((s, r) => s + r.amountSoldInYearEur, 0)
+  const internalBuys = sumAll(nonCashRows, (r) => r.amountBoughtInYearEur)
+  const internalSells = sumAll(nonCashRows, (r) => r.amountSoldInYearEur)
+  const cashMovementIn = sumAll(cashRows, (r) => r.amountBoughtInYearEur)
+  const cashMovementOut = sumAll(cashRows, (r) => r.amountSoldInYearEur)
   const cashflowClassificationDiff =
     summary.grossContributionsInEur - summary.grossContributionsOutEur - summary.netContributionsEur
 

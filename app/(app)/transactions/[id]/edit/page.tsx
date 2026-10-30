@@ -1,5 +1,6 @@
 import { notFound, redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import {
   TransactionForm,
   type InvestmentOption,
@@ -7,7 +8,12 @@ import {
 } from '@/components/transactions/transaction-form'
 import { heldQuantity } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
-import type { Transaction } from '@/types/database'
+import type { Investment, Transaction } from '@/types/database'
+
+type InvestmentListRow = Pick<
+  Investment,
+  'id' | 'name' | 'type' | 'current_value' | 'currency' | 'quantity_unit' | 'platform'
+>
 
 export const dynamic = 'force-dynamic'
 
@@ -35,16 +41,12 @@ export default async function EditTransactionPage({
 
   const [{ data: investmentsData }, { data: txData }, fxRes] =
     await Promise.all([
-      supabase
-        .from('investments')
-        .select('id, name, type, current_value, currency, quantity_unit, platform')
-        .eq('user_id', user.id)
-        .order('name', { ascending: true }),
-      supabase
-        .from('transactions')
-        .select('*')
-        .eq('user_id', user.id)
-        .returns<Transaction[]>(),
+      fetchAllInvestments<InvestmentListRow>(
+        supabase,
+        'id, name, type, current_value, currency, quantity_unit, platform',
+        { userId: user.id, order: 'name' }
+      ),
+      fetchAllTransactions(supabase, '*', { userId: user.id }),
       loadFxRates(supabase),
     ])
 

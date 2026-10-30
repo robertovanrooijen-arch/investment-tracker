@@ -1,8 +1,10 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
+import { positionReturn } from '@/lib/domain/returns'
 import { Badge } from '@/components/ui/badge'
 import { StatCard } from '@/components/ui/stat-card'
 import { ClickableTr } from '@/components/ui/clickable-tr'
@@ -20,7 +22,7 @@ import { txTypeBadgeClass } from '@/lib/domain/transaction-helpers'
 import { hasUnits } from '@/lib/domain/constants'
 import { categoryLabel } from '@/lib/domain/allocation'
 import { buildInvestmentChartTimeline } from '@/lib/domain/chart-timeline'
-import type { Investment, Transaction } from '@/types/database'
+import type { Investment } from '@/types/database'
 
 type InvestmentSnapshotRow = {
   date: string
@@ -40,13 +42,7 @@ export default async function InvestmentDetailPage({
 
   const [invRes, txRes, snapRes, fxRes] = await Promise.all([
     supabase.from('investments').select('*').eq('id', id).single<Investment>(),
-    supabase
-      .from('transactions')
-      .select('*')
-      .eq('investment_id', id)
-      .order('date', { ascending: false })
-      .order('created_at', { ascending: false })
-      .returns<Transaction[]>(),
+    fetchAllTransactions(supabase, '*', { investmentId: id, order: 'date_desc' }),
     fetchAllRows<InvestmentSnapshotRow>((from, to) =>
       supabase
         .from('investment_snapshots')
@@ -167,14 +163,18 @@ export default async function InvestmentDetailPage({
             value={
               <PrivacyMoney
                 value={m.realizedProfit}
-                fallbackText={m.totalProfitPct !== null ? pct(m.totalProfitPct) : '—'}
+                fallbackText={m.realizedReturnPct !== null ? pct(m.realizedReturnPct) : '—'}
               />
             }
             hint={
-              m.totalProfitPct !== null ? (
-                <PrivacyGate>
+              m.realizedReturnPct !== null ? (
+                <PrivacyGate fallback={<>{pct(m.realizedReturnPct)} on cost of what was sold</>}>
                   <>
-                    {pct(m.totalProfitPct)} on {money(m.totalEverInvested, 'EUR')} invested
+                    {pct(m.realizedReturnPct)} on sales: {money(m.saleProceeds, 'EUR')} net proceeds −{' '}
+                    {money(m.soldCostBasis, 'EUR')} cost sold
+                    {Math.abs(m.realizedProfit - m.tradeRealizedProfit) >= 0.005
+                      ? ` (incl. ${money(m.realizedProfit - m.tradeRealizedProfit, 'EUR')} dividend/interest/fees)`
+                      : ''}
                   </>
                 </PrivacyGate>
               ) : undefined
@@ -215,16 +215,19 @@ export default async function InvestmentDetailPage({
                 <PrivacyMoney
                   value={m.totalProfit}
                   signed
-                  fallbackText={m.totalProfitPct !== null ? pct(m.totalProfitPct) : '—'}
+                  fallbackText={positionReturn(m).pct !== null ? pct(positionReturn(m).pct) : '—'}
                 />
               ) : (
                 '—'
               )
             }
             hint={
-              m.hasActivity && m.totalProfitPct !== null ? (
-                <PrivacyGate>
-                  <>{pct(m.totalProfitPct)}</>
+              m.hasActivity && positionReturn(m).pct !== null ? (
+                <PrivacyGate fallback={<>{pct(positionReturn(m).pct)} unrealized on remaining cost</>}>
+                  <>
+                    {pct(positionReturn(m).pct)} unrealized on remaining cost
+                    {Math.abs(m.realizedProfit) >= 0.005 ? ` · ${money(m.realizedProfit, 'EUR')} realized` : ''}
+                  </>
                 </PrivacyGate>
               ) : !m.hasActivity ? (
                 'Record a buy or deposit to start tracking gains'

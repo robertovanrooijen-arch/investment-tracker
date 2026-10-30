@@ -1,6 +1,10 @@
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
+import { CURRENT_PL_DEFINITION_VERSION } from '@/lib/domain/snapshot-method'
+import { DataQualityNotice } from '@/components/ui/data-quality-notice'
+import { unfundedPlatforms } from '@/lib/domain/reconciliation'
 import { StatCard } from '@/components/ui/stat-card'
 import { PortfolioHistoryChart } from '@/components/history/portfolio-history-chart'
 import type { LivePoint, PortfolioSnapshot as ChartPortfolioSnapshot, InvSnapshot } from '@/components/history/portfolio-history-chart'
@@ -21,7 +25,7 @@ import {
 } from '@/lib/domain/year-analysis'
 import type { CapitalFlowEntryForYear, InvestmentSnapshotForYtd } from '@/lib/domain/year-analysis'
 import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
-import type { Investment, Transaction, InvestmentType } from '@/types/database'
+import type { InvestmentType } from '@/types/database'
 
 type RawPortfolioSnapshot = {
   date: string
@@ -30,6 +34,7 @@ type RawPortfolioSnapshot = {
   total_unrealized_eur: number
   total_realized_eur: number
   snapshot_source: string
+  pl_definition_version: number | null
 }
 
 type RawInvSnapRow = {
@@ -54,17 +59,24 @@ export default async function YtdPage() {
   const todayIso = new Date().toISOString().slice(0, 10)
 
   const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes] = await Promise.all([
-    supabase.from('investments').select('*').returns<Investment[]>(),
-    supabase.from('transactions').select('*').returns<Transaction[]>(),
+    fetchAllInvestments(supabase),
+    fetchAllTransactions(supabase),
     loadFxRates(supabase),
     supabase
       .from('portfolio_snapshots')
-      .select('date, total_value_eur, total_invested_eur, total_unrealized_eur, total_realized_eur, snapshot_source')
+      // '*' so pl_definition_version is included once migration M7 adds it.
+      .select('*')
       .order('date', { ascending: true }),
-    supabase
-      .from('capital_flow_entries')
-      .select('year, flow_date, direction, amount_eur')
-      .returns<CapitalFlowEntryForYear[]>(),
+    fetchAllRows<CapitalFlowEntryForYear>((from, to) =>
+      supabase
+        .from('capital_flow_entries')
+        // '*' so linked_transaction_id is picked up automatically once the
+        // pending migration adds it (prevents double-counting migrated rows).
+        .select('*')
+        .order('id', { ascending: true })
+        .range(from, to)
+        .returns<CapitalFlowEntryForYear[]>()
+    ),
     fetchAllRows<RawInvSnapRow>((from, to) =>
       supabase
         .from('investment_snapshots')
@@ -106,6 +118,7 @@ export default async function YtdPage() {
     total_unrealized_eur: Number(row.total_unrealized_eur),
     total_realized_eur: Number(row.total_realized_eur ?? 0),
     snapshot_source: String(row.snapshot_source ?? ''),
+    pl_definition_version: row.pl_definition_version == null ? null : Number(row.pl_definition_version),
   }))
 
   const rawInvSnapshots = invSnapRes.data ?? []
@@ -163,6 +176,18 @@ export default async function YtdPage() {
       byTypeMap.set(inv.type, (byTypeMap.get(inv.type) ?? 0) + row.currentValueEur)
     }
   }
+  // Where the start value comes from (coverage of historical valuations).
+  const startSnapshotSource =
+    rawSnapshots.find((r) => r.date === summary.startValueDate)?.snapshot_source ?? null
+  const startValueSourceLabel =
+    startSnapshotSource === 'cron' || startSnapshotSource === 'manual_refresh'
+      ? 'live snapshot'
+      : startSnapshotSource?.startsWith('reconstructed')
+        ? 'reconstructed from historical prices (derived)'
+        : startSnapshotSource
+          ? `imported/statement snapshot (${startSnapshotSource})`
+          : 'source unknown'
+
   const livePoint: LivePoint = {
     date: todayIso,
     totalValue: liveMetrics.totalValue,
@@ -182,6 +207,7 @@ export default async function YtdPage() {
         total_unrealized_eur: s.total_unrealized_eur,
         total_realized_eur: s.total_realized_eur,
         snapshot_source: s.snapshot_source,
+        pl_definition_version: s.pl_definition_version,
       })),
     {
       date: todayIso,
@@ -190,6 +216,7 @@ export default async function YtdPage() {
       total_unrealized_eur: liveMetrics.totalUnrealized,
       total_realized_eur: liveMetrics.totalRealized,
       snapshot_source: 'live',
+      pl_definition_version: CURRENT_PL_DEFINITION_VERSION,
     },
   ].sort((a, b) => (a.date < b.date ? -1 : 1))
 
@@ -230,6 +257,13 @@ export default async function YtdPage() {
         subtitle={`Portfolio performance from January 1, ${year} to today.`}
       />
 
+      <DataQualityNotice
+        fxIncompleteCount={Math.max(liveMetrics.fxIncompleteCount, summary.fxIncompleteCount)}
+        fxLiveFallbackCount={liveMetrics.fxLiveFallbackCount}
+        legacyContributionsSkippedFx={summary.legacyContributionsSkippedFx}
+        unfundedPlatforms={unfundedPlatforms(investments, transactions, capitalFlowEntries, fxRates)}
+      />
+
       {/* Top summary */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
@@ -248,8 +282,11 @@ export default async function YtdPage() {
           }
           hint={
             summary.modifiedDietzReturnPercent !== null ? (
-              <PrivacyGate fallback="Modified Dietz">
-                <>{fmtPercent(summary.modifiedDietzReturnPercent)} · Modified Dietz</>
+              <PrivacyGate fallback={`Modified Dietz, ${summary.startValueDate} → ${summary.endValueDate}`}>
+                <>
+                  {fmtPercent(summary.modifiedDietzReturnPercent)} · Modified Dietz, {summary.startValueDate} →{' '}
+                  {summary.endValueDate}
+                </>
               </PrivacyGate>
             ) : (
               'No reliable start-of-year value yet'
@@ -267,7 +304,7 @@ export default async function YtdPage() {
           value={<PrivacyMoney value={displayStartValueEur} fallbackText="—" />}
           hint={
             summary.startValueEur !== null
-              ? `As of ${summary.startValueDate}`
+              ? `As of ${summary.startValueDate} · ${startValueSourceLabel}`
               : startedThisYear
                 ? 'No prior activity — started investing this year'
                 : 'No start-of-year snapshot available'
@@ -276,9 +313,11 @@ export default async function YtdPage() {
       </div>
 
       <p className="text-xs text-slate-400 px-1">
-        YTD return = current value − start-of-year value − net contributions, so deposits and withdrawals are not
-        counted as investment performance. The percentage return uses Modified Dietz, which adjusts for the timing
-        of cash flows — the same methodology Year Analysis uses.
+        YTD return (€) = current value − start-of-year value − net external contributions, so deposits and
+        withdrawals are not counted as performance. YTD % (Modified Dietz) = that euro result ÷ (start value + each
+        external flow weighted by the share of the period it was invested). Only money moving between your bank and a
+        platform counts as a flow; buys, sales and re-investments do not. Market YTD per instrument (on Investment
+        Performance) is a different question: the price change of the instrument itself.
       </p>
 
       {/* Main chart */}

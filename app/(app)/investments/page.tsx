@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
 import { computeInvestmentMetrics } from '@/lib/domain/calculations'
@@ -11,7 +12,6 @@ import { RefreshPortfolioButton } from '@/components/dashboard/refresh-portfolio
 import { InvestmentsList } from '@/components/investments/investments-list'
 import type { PrevSnap } from '@/components/investments/investment-row'
 import type { PreparedRow } from '@/components/investments/investments-list'
-import type { Investment, Transaction } from '@/types/database'
 
 export default async function InvestmentsPage() {
   const supabase = await createClient()
@@ -28,12 +28,8 @@ export default async function InvestmentsPage() {
   const ytdPeriodStartIso = `${currentYear}-01-01`
 
   const [invRes, txRes, fxRes, snapRes, latestSnapRes, ytdSnapRes] = await Promise.all([
-    supabase
-      .from('investments')
-      .select('*')
-      .order('updated_at', { ascending: false })
-      .returns<Investment[]>(),
-    supabase.from('transactions').select('*').returns<Transaction[]>(),
+    fetchAllInvestments(supabase),
+    fetchAllTransactions(supabase),
     loadFxRates(supabase),
     supabase
       .from('investment_snapshots')
@@ -64,7 +60,10 @@ export default async function InvestmentsPage() {
   ])
 
   const error = invRes.error
-  const investments = invRes.data ?? []
+  // Paginated by id; most recently updated first, as before.
+  const investments = [...(invRes.data ?? [])].sort((a, b) =>
+    a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : a.id.localeCompare(b.id)
+  )
   const transactions = txRes.data ?? []
   const fxRates = fxRes.rates
   const lastRefreshedAt =

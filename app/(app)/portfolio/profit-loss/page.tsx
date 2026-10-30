@@ -1,13 +1,20 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
+import { DataQualityNotice } from '@/components/ui/data-quality-notice'
+import { unfundedPlatforms } from '@/lib/domain/reconciliation'
 import { StatCard } from '@/components/ui/stat-card'
 import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import { AssetClassPerformanceTable } from '@/components/profit-loss/asset-class-performance-table'
 import type { ClassPerformanceRow } from '@/components/profit-loss/asset-class-performance-table'
 import { YtdBridgeBar } from '@/components/profit-loss/ytd-bridge-bar'
-import { computePortfolioMetrics, computePerformanceByCategory, pct } from '@/lib/domain/calculations'
+import { computeInvestmentMetrics, computePortfolioMetrics, computePerformanceByCategory, pct } from '@/lib/domain/calculations'
+import { hasUnits, isCashLikeInvestment } from '@/lib/domain/constants'
+import { buildExternalCashFlowRows, externalFlowsForReturns } from '@/lib/domain/contributions'
+import { allTimeMoneyWeightedReturn } from '@/lib/domain/returns'
+import { PositionReturnsTable, type PositionReturnRow } from '@/components/profit-loss/position-returns-table'
 import type { PortfolioMetrics } from '@/lib/domain/calculations'
 import { categoryLabel } from '@/lib/domain/allocation'
 import { loadFxRates } from '@/lib/domain/fx'
@@ -17,7 +24,7 @@ import {
   computeYearPortfolioSummary,
 } from '@/lib/domain/year-analysis'
 import type { CapitalFlowEntryForYear, InvestmentSnapshotForYtd } from '@/lib/domain/year-analysis'
-import type { Investment, Transaction, InvestmentType } from '@/types/database'
+import type { InvestmentType } from '@/types/database'
 
 export const dynamic = 'force-dynamic'
 
@@ -53,17 +60,23 @@ export default async function ProfitLossDetailsPage() {
   const year = new Date().getFullYear()
 
   const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes] = await Promise.all([
-    supabase.from('investments').select('*').returns<Investment[]>(),
-    supabase.from('transactions').select('*').returns<Transaction[]>(),
+    fetchAllInvestments(supabase),
+    fetchAllTransactions(supabase),
     loadFxRates(supabase),
     supabase
       .from('portfolio_snapshots')
       .select('date, total_value_eur')
       .order('date', { ascending: true }),
-    supabase
-      .from('capital_flow_entries')
-      .select('year, flow_date, direction, amount_eur')
-      .returns<CapitalFlowEntryForYear[]>(),
+    fetchAllRows<CapitalFlowEntryForYear>((from, to) =>
+      supabase
+        .from('capital_flow_entries')
+        // '*' so linked_transaction_id is picked up automatically once the
+        // pending migration adds it (prevents double-counting migrated rows).
+        .select('*')
+        .order('id', { ascending: true })
+        .range(from, to)
+        .returns<CapitalFlowEntryForYear[]>()
+    ),
     fetchAllRows<RawInvSnapRow>((from, to) =>
       supabase
         .from('investment_snapshots')
@@ -107,6 +120,50 @@ export default async function ProfitLossDetailsPage() {
 
   // ── A. Total performance — same all-time metrics the Dashboard shows ─────
   const liveMetrics = computePortfolioMetrics(investments, transactions, fxRates)
+  // All-time money-weighted return (XIRR) on EXTERNAL flows — the return
+  // figure for "total performance"; the euro P/L above has no honest
+  // single denominator.
+  const mwr = allTimeMoneyWeightedReturn(
+    externalFlowsForReturns(buildExternalCashFlowRows(capitalFlowEntries, transactions)),
+    liveMetrics.totalValue,
+    new Date().toISOString().slice(0, 10)
+  )
+
+  // Realized (sold) and unrealized (held) result per position.
+  const positionRows: PositionReturnRow[] = investments
+    .filter((inv) => !isCashLikeInvestment(inv) && hasUnits(inv.type))
+    .map((inv) => {
+      const m = computeInvestmentMetrics(inv, transactions, fxRates)
+      return {
+        id: inv.id,
+        name: inv.name,
+        platform: inv.platform,
+        isClosed: m.isClosed,
+        soldCostEur: m.soldCostBasis,
+        saleProceedsEur: m.saleProceeds,
+        tradeRealizedEur: m.tradeRealizedProfit,
+        realizedReturnPct: m.realizedReturnPct,
+        incomeAndFeesEur: m.incomeNet - m.separateFees,
+        remainingCostEur: m.remainingCostBasis,
+        currentValueEur: m.currentValue,
+        unrealizedEur: m.unrealizedProfit,
+        unrealizedReturnPct: m.unrealizedReturnPct,
+      }
+    })
+    .sort((a, b) => b.tradeRealizedEur + b.unrealizedEur - (a.tradeRealizedEur + a.unrealizedEur))
+
+  // Unrealized return on remaining cost per asset class (open, non-cash
+  // positions). Plain sums: an unknown figure makes the class unknown.
+  const unrealizedByClass = new Map<string, { unrealized: number; cost: number }>()
+  for (const inv of investments) {
+    if (isCashLikeInvestment(inv)) continue
+    const m = computeInvestmentMetrics(inv, transactions, fxRates)
+    if (m.isClosed || !(m.remainingCostBasis > 0 || Number.isNaN(m.remainingCostBasis))) continue
+    const b = unrealizedByClass.get(inv.type) ?? { unrealized: 0, cost: 0 }
+    b.unrealized += m.unrealizedProfit
+    b.cost += m.remainingCostBasis
+    unrealizedByClass.set(inv.type, b)
+  }
 
   // ── B. YTD performance — reuses Year Analysis' current-year engine, the
   // same one the /ytd page is built on. "YTD" is just "this year, so far".
@@ -134,18 +191,18 @@ export default async function ProfitLossDetailsPage() {
   const classRows: ClassPerformanceRow[] = [...allTypes]
     .map((type) => {
       const ytd = classYtd.find((c) => c.type === type) ?? null
-      const total = classTotal.find((c) => c.key === type) ?? null
       return {
         key: type,
         label: categoryLabel(type),
         ytdReturnPercent: ytd?.returnPercent ?? null,
         ytdUnavailableReason: ytd?.percentUnavailableReason ?? null,
-        totalReturnPercent: total?.totalProfitPct !== null && total?.totalProfitPct !== undefined
-          ? total.totalProfitPct * 100
-          : null,
+        unrealizedReturnPercent: (() => {
+          const b = unrealizedByClass.get(type)
+          return b && Number.isFinite(b.unrealized) && b.cost > 0 ? (b.unrealized / b.cost) * 100 : null
+        })(),
       }
     })
-    .sort((a, b) => (b.totalReturnPercent ?? -Infinity) - (a.totalReturnPercent ?? -Infinity))
+    .sort((a, b) => (b.unrealizedReturnPercent ?? -Infinity) - (a.unrealizedReturnPercent ?? -Infinity))
 
   // ── D. YTD breakdown — same summary numbers as section B, just the
   // start/contributions/growth/end split, shown as a bar instead of a table.
@@ -172,6 +229,13 @@ export default async function ProfitLossDetailsPage() {
         subtitle="Performance by asset class and how this year's change breaks down."
       />
 
+      <DataQualityNotice
+        fxIncompleteCount={Math.max(liveMetrics.fxIncompleteCount, yearSummary.fxIncompleteCount)}
+        fxLiveFallbackCount={liveMetrics.fxLiveFallbackCount}
+        legacyContributionsSkippedFx={yearSummary.legacyContributionsSkippedFx}
+        unfundedPlatforms={unfundedPlatforms(investments, transactions, capitalFlowEntries, fxRates)}
+      />
+
       {/* A. Total performance */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard
@@ -180,19 +244,16 @@ export default async function ProfitLossDetailsPage() {
             <PrivacyMoney
               value={liveMetrics.totalProfit}
               signed
-              fallbackText={
-                liveMetrics.totalProfitPct !== null
-                  ? `${liveMetrics.totalProfitPct >= 0 ? '+' : ''}${pct(liveMetrics.totalProfitPct)}`
-                  : '—'
-              }
+              fallbackText={mwr.annualRate !== null ? `${pct(mwr.annualRate)} / yr XIRR` : '—'}
             />
           }
           hint={
-            liveMetrics.totalProfitPct !== null ? (
-              <PrivacyGate>
-                <>{pct(liveMetrics.totalProfitPct)} all-time, cost-basis P/L</>
-              </PrivacyGate>
-            ) : undefined
+            <>
+              All-time cost-basis P/L in euros.{' '}
+              {mwr.annualRate !== null
+                ? `Money-weighted return (XIRR): ${mwr.annualRate >= 0 ? '+' : ''}${pct(mwr.annualRate)} per year on your external deposits and withdrawals.`
+                : `No XIRR: ${mwr.unavailableReason ?? 'not enough data'}`}
+            </>
           }
           tone={tone(liveMetrics.totalProfit)}
         />
@@ -257,6 +318,10 @@ export default async function ProfitLossDetailsPage() {
           since each position was opened. Cash excluded.
         </p>
         <AssetClassPerformanceTable rows={classRows} />
+      </div>
+
+      <div>
+        <PositionReturnsTable rows={positionRows} />
       </div>
 
       {/* D. YTD profit breakdown */}

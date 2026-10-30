@@ -12,7 +12,8 @@ export type ClassPerformanceRow = {
   label: string
   ytdReturnPercent: number | null
   ytdUnavailableReason: string | null
-  totalReturnPercent: number | null
+  // Unrealized return on remaining cost of the open positions in this class.
+  unrealizedReturnPercent: number | null
 }
 
 function fmtPercent(n: number | null): string {
@@ -40,7 +41,7 @@ export function AssetClassPerformanceTable({ rows }: { rows: ClassPerformanceRow
           <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
             <th className="pb-2 font-medium">Asset class</th>
             <th className="pb-2 font-medium text-right">YTD return</th>
-            <th className="pb-2 font-medium text-right">Total return</th>
+            <th className="pb-2 font-medium text-right" title="(value − remaining cost) ÷ remaining cost of open positions">Unrealized on cost</th>
           </tr>
         </thead>
         <tbody>
@@ -53,8 +54,8 @@ export function AssetClassPerformanceTable({ rows }: { rows: ClassPerformanceRow
               >
                 {fmtPercent(row.ytdReturnPercent)}
               </td>
-              <td className={`py-2.5 text-right tabular-nums ${toneClass(row.totalReturnPercent)}`}>
-                {fmtPercent(row.totalReturnPercent)}
+              <td className={`py-2.5 text-right tabular-nums ${toneClass(row.unrealizedReturnPercent)}`}>
+                {fmtPercent(row.unrealizedReturnPercent)}
               </td>
             </tr>
           ))}
@@ -73,8 +74,8 @@ export function AssetClassPerformanceTable({ rows }: { rows: ClassPerformanceRow
               >
                 YTD {fmtPercent(row.ytdReturnPercent)}
               </div>
-              <div className={`tabular-nums text-xs ${toneClass(row.totalReturnPercent)}`}>
-                Total {fmtPercent(row.totalReturnPercent)}
+              <div className={`tabular-nums text-xs ${toneClass(row.unrealizedReturnPercent)}`}>
+                Unrealized {fmtPercent(row.unrealizedReturnPercent)}
               </div>
             </div>
           </li>

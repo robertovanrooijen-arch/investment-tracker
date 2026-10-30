@@ -1,6 +1,9 @@
 import type { Investment, Transaction } from '@/types/database'
 import { hasUnits } from '@/lib/domain/constants'
 import type { FxRates } from '@/lib/domain/fx'
+import { txFeeInEur, txPriceRateToEur } from '@/lib/domain/calculations'
+import { allocateSale } from '@/lib/domain/cost-basis'
+import { tradeGrossNative } from '@/lib/domain/trade-amounts'
 
 export type ChartPoint = {
   date: string
@@ -11,23 +14,15 @@ export type ChartPoint = {
 }
 
 // ---------- Internal FX helpers ----------
-// Mirrors the logic in calculations.ts without touching that module.
+// Delegates to the shared FX policy in calculations.ts (historical row rate,
+// no live rate for imported rows, NaN instead of a silent 1 when missing).
 
 function rateToEur(tx: Transaction, fxRates?: FxRates): number {
-  const ccy = tx.price_currency ?? 'EUR'
-  if (ccy === 'EUR') return 1
-  if (tx.fx_rate_to_eur != null) return tx.fx_rate_to_eur
-  return fxRates?.[ccy] ?? 1
+  return txPriceRateToEur(tx, fxRates).rate ?? NaN
 }
 
 function feeInEur(tx: Transaction, fxRates?: FxRates): number {
-  const fee = tx.fee ?? 0
-  if (fee === 0) return 0
-  const feeCcy = tx.fee_currency ?? tx.price_currency ?? 'EUR'
-  if (feeCcy === 'EUR') return fee
-  const priceCcy = tx.price_currency ?? 'EUR'
-  if (feeCcy === priceCcy) return fee * rateToEur(tx, fxRates)
-  return fee * (fxRates?.[feeCcy] ?? 1)
+  return txFeeInEur(tx, fxRates)
 }
 
 function sortChron(txs: Transaction[]): Transaction[] {
@@ -103,18 +98,22 @@ export function buildInvestmentChartTimeline(
 
       if (isUnit) {
         if (tx.type === 'buy' && tx.quantity != null && tx.price_per_unit != null) {
-          // grossEur + feeEur — mirrors calculations.ts exactly
-          costBasisEur += tx.quantity * tx.price_per_unit * rate + feeInEur(tx, fxRates)
+          // grossEur + feeEur — mirrors calculations.ts exactly (exact broker amount)
+          costBasisEur += tradeGrossNative(tx) * rate + feeInEur(tx, fxRates)
           sharesHeld += tx.quantity
           const p = tx.price_per_unit * rate
           lastPriceEurPerUnit = p
           txPriceEurPerUnit = p   // record that this date has a transaction price
         } else if (tx.type === 'sell' && tx.quantity != null && sharesHeld > 0) {
-          const sellQty = Math.min(tx.quantity, sharesHeld)
-          if (sellQty > 0) {
-            // Reduce cost basis by avg cost × sold qty (avg-cost method)
-            costBasisEur -= (costBasisEur / sharesHeld) * sellQty
-            sharesHeld -= sellQty
+          // Same cost-basis rules as calculations.ts (cost-basis.ts).
+          const sale = allocateSale(sharesHeld, costBasisEur, costBasisEur, tx.quantity)
+          if (sale) {
+            costBasisEur -= sale.soldCostEur
+            sharesHeld -= sale.quantity
+            if (sale.closesPosition) {
+              sharesHeld = 0
+              costBasisEur = 0
+            }
           }
           if (tx.price_per_unit != null) {
             const p = tx.price_per_unit * rate

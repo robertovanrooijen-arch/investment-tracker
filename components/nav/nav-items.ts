@@ -11,6 +11,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/investments',       label: 'Investments', icon: 'investments' },
   { href: '/transactions',      label: 'Transactions',icon: 'transactions'},
   { href: '/history',           label: 'History',     icon: 'investments' },
+  { href: '/returns',           label: 'Returns',     icon: 'performance' },
   { href: '/ytd',               label: 'YTD',         icon: 'ytd'         },
   { href: '/year-analysis',     label: 'Year Analysis', icon: 'calendar'  },
   { href: '/investment-performance', label: 'Investment Performance', icon: 'performance' },

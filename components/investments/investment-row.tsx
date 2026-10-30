@@ -7,6 +7,7 @@ import { isCashLikeInvestment } from '@/lib/domain/constants'
 import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import { categoryLabel } from '@/lib/domain/allocation'
 import type { InvestmentMetrics } from '@/lib/domain/calculations'
+import { positionReturn } from '@/lib/domain/returns'
 import type { InvestmentYtdRow } from '@/lib/domain/year-analysis'
 import type { Investment } from '@/types/database'
 
@@ -70,6 +71,7 @@ export function InvestmentRow({ inv, m, portfolioWeight, dailyChangeEur, dailyCh
 
   const isCashLike = isCashLikeInvestment(inv)
   const showPL = !isCashLike && m.totalEverInvested > 0
+  const ret = positionReturn(m)
   const plTone =
     m.totalProfit > 0
       ? 'text-emerald-600'
@@ -143,10 +145,10 @@ export function InvestmentRow({ inv, m, portfolioWeight, dailyChangeEur, dailyCh
           <span className="text-slate-400">Not applicable</span>
         ) : showPL ? (
           <>
-            <PrivacyGate fallback={<div>{m.totalProfitPct !== null ? pct(m.totalProfitPct) : '—'}</div>}>
+            <PrivacyGate fallback={<div>{ret.pct !== null ? pct(ret.pct) : '—'}</div>}>
               <div>{money(m.totalProfit, 'EUR')}</div>
-              <div className="text-xs">
-                {m.totalProfitPct !== null ? pct(m.totalProfitPct) : '—'}
+              <div className="text-xs" title={ret.explanation}>
+                {ret.pct !== null ? pct(ret.pct) : '—'}
               </div>
             </PrivacyGate>
           </>

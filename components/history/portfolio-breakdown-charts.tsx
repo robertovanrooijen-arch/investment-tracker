@@ -201,17 +201,15 @@ function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
   // exact same ratio the bar width below already uses, so the number next
   // to a bar always matches how full that bar looks. This is a SHARE of
   // total P/L, not a return — labelled as such, never conflated with
-  // totalProfitPct (that's investment return on cost basis, a different
+  // resultVsPurchaseVolumePct (result vs purchase volume, a different
   // question answered by the "Total" row below).
   function shareOfTotalPLPct(n: number): number | null {
     return hasAnyPL ? (Math.abs(n) / absTotal) * 100 : null
   }
 
   const profitTone = totalProfit > 0 ? 'text-emerald-700' : totalProfit < 0 ? 'text-rose-700' : 'text-slate-900'
-  // Read the canonical ratio straight from computePortfolioMetrics rather
-  // than re-deriving it here — this is the exact number the Dashboard's
-  // other P/L surfaces and Profit/Loss Details both read, so it can't drift.
-  const totalProfitPct = metrics.totalProfitPct !== null ? metrics.totalProfitPct * 100 : null
+  // No percentage on the total: profit / cumulative purchases is not a return
+  // (re-bought money is counted again). The return figure is the Dashboard XIRR.
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
@@ -273,23 +271,10 @@ function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
         <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
           <span className="text-sm font-medium text-slate-900">Total profit / loss</span>
           <div className="text-right">
-            <PrivacyGate
-              fallback={
-                totalProfitPct !== null && (
-                  <span className={`text-base font-semibold tabular-nums ${profitTone}`}>
-                    {totalProfitPct >= 0 ? '+' : ''}{totalProfitPct.toFixed(2)}%
-                  </span>
-                )
-              }
-            >
+            <PrivacyGate fallback="—">
               <span className={`text-base font-semibold tabular-nums ${profitTone}`}>
                 {totalProfit >= 0 ? '+' : ''}{money(totalProfit, 'EUR')}
               </span>
-              {totalProfitPct !== null && (
-                <span className="ml-2 text-xs text-slate-500 tabular-nums">
-                  ({totalProfitPct >= 0 ? '+' : ''}{totalProfitPct.toFixed(2)}%)
-                </span>
-              )}
             </PrivacyGate>
           </div>
         </div>

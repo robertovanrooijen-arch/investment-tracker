@@ -1,5 +1,6 @@
 'use client'
 
+import { positionReturn } from '@/lib/domain/returns'
 import { useState, useMemo } from 'react'
 import Link from 'next/link'
 import { money, fmtDate } from '@/lib/format'
@@ -186,7 +187,7 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
         case 'platform':  av = a.inv.platform;      bv = b.inv.platform;      break
         case 'value':     av = a.m.currentValue;    bv = b.m.currentValue;    break
         case 'pl_eur':    av = a.m.totalProfit;     bv = b.m.totalProfit;     break
-        case 'pl_pct':    av = a.m.totalProfitPct;  bv = b.m.totalProfitPct;  break
+        case 'pl_pct':    av = positionReturn(a.m).pct; bv = positionReturn(b.m).pct; break
         case 'ytd_pct':   av = a.ytd?.ytdReturnPercent ?? null; bv = b.ytd?.ytdReturnPercent ?? null; break
         case 'daily_eur': av = a.dailyChangeEur;    bv = b.dailyChangeEur;    break
         case 'daily_pct': av = a.dailyChangePct;    bv = b.dailyChangePct;    break
@@ -686,8 +687,8 @@ export function InvestmentsList({ rows, ytdYear }: { rows: PreparedRow[]; ytdYea
                         {isCashLike
                           ? 'Not applicable'
                           : showPL
-                            ? m.totalProfitPct !== null
-                              ? pct(m.totalProfitPct)
+                            ? positionReturn(m).pct !== null
+                              ? pct(positionReturn(m).pct)
                               : '—'
                             : '—'}
                       </div>

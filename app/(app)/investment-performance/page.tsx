@@ -1,6 +1,9 @@
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
+import { DataQualityNotice } from '@/components/ui/data-quality-notice'
+import { unfundedPlatforms } from '@/lib/domain/reconciliation'
 import { StatCard } from '@/components/ui/stat-card'
 import { PrivacyMoney } from '@/components/ui/privacy-value'
 import { loadFxRates } from '@/lib/domain/fx'
@@ -12,13 +15,12 @@ import {
   computeYearPortfolioSummary,
 } from '@/lib/domain/year-analysis'
 import type { InvestmentSnapshotForYtd, CapitalFlowEntryForYear } from '@/lib/domain/year-analysis'
-import { fetchMarketYtdCloses, computeMarketYtdPercent } from '@/lib/domain/market-ytd'
+import { fetchMarketYtdCloses, computeMarketYtdForInvestment } from '@/lib/domain/market-ytd'
 import { buildInvestmentChartTimeline } from '@/lib/domain/chart-timeline'
 import { PerformanceTable } from '@/components/investment-performance/performance-table'
 import type { PerformanceRow } from '@/components/investment-performance/performance-table'
 import { MarketYtdBarChart } from '@/components/investment-performance/market-ytd-bar-chart'
 import { InvestmentHistorySection } from '@/components/investment-performance/investment-history-section'
-import type { Investment, Transaction } from '@/types/database'
 
 export const dynamic = 'force-dynamic'
 
@@ -37,18 +39,24 @@ export default async function InvestmentPerformancePage() {
   const todayIso = new Date().toISOString().slice(0, 10)
 
   const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes] = await Promise.all([
-    supabase.from('investments').select('*').returns<Investment[]>(),
-    supabase.from('transactions').select('*').returns<Transaction[]>(),
+    fetchAllInvestments(supabase),
+    fetchAllTransactions(supabase),
     loadFxRates(supabase),
     supabase
       .from('portfolio_snapshots')
       .select('date, total_value_eur')
       .order('date', { ascending: true })
       .returns<SnapshotForSummary[]>(),
-    supabase
-      .from('capital_flow_entries')
-      .select('year, flow_date, direction, amount_eur')
-      .returns<CapitalFlowEntryForYear[]>(),
+    fetchAllRows<CapitalFlowEntryForYear>((from, to) =>
+      supabase
+        .from('capital_flow_entries')
+        // '*' so linked_transaction_id is picked up automatically once the
+        // pending migration adds it (prevents double-counting migrated rows).
+        .select('*')
+        .order('id', { ascending: true })
+        .range(from, to)
+        .returns<CapitalFlowEntryForYear[]>()
+    ),
     // All per-investment snapshots for this user — reused for two different
     // purposes below: (1) source-backed year-start valuations (date <=
     // yearStartIso), same mechanism computeInvestmentYtdRows already
@@ -113,7 +121,9 @@ export default async function InvestmentPerformancePage() {
       const assetRow = assetRowById.get(inv.id) ?? null
       const ytd = ytdRowById.get(inv.id) ?? null
       const historicalClose = inv.ticker ? marketYtdCloses.get(inv.ticker) ?? null : null
-      const marketYtdPercent = computeMarketYtdPercent(inv.current_price, historicalClose?.closeNative ?? null)
+      // Normalised to the investment's own unit and currency (per gram vs per
+      // troy ounce for metals) — see computeMarketYtdForInvestment.
+      const marketYtdPercent = computeMarketYtdForInvestment(inv, historicalClose, todayIso).percent
 
       return {
         inv,
@@ -168,6 +178,13 @@ export default async function InvestmentPerformancePage() {
       <PageHeader
         title="Investment Performance"
         subtitle={`Compare market return vs. your own position return, year-to-date (${year}). Values in EUR.`}
+      />
+
+      <DataQualityNotice
+        fxIncompleteCount={Math.max(liveMetrics.fxIncompleteCount, summary.fxIncompleteCount)}
+        fxLiveFallbackCount={liveMetrics.fxLiveFallbackCount}
+        legacyContributionsSkippedFx={summary.legacyContributionsSkippedFx}
+        unfundedPlatforms={unfundedPlatforms(investments, transactions, capitalFlowEntries, fxRates)}
       />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">

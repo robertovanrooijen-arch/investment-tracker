@@ -1,6 +1,9 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { PageHeader } from '@/components/ui/page-header'
+import { DataQualityNotice } from '@/components/ui/data-quality-notice'
+import { unfundedPlatforms } from '@/lib/domain/reconciliation'
 import { StatCard } from '@/components/ui/stat-card'
 import { PortfolioBreakdownCharts } from '@/components/history/portfolio-breakdown-charts'
 import { RecentTransactions } from '@/components/dashboard/recent-transactions'
@@ -15,7 +18,10 @@ import {
 import { loadFxRates } from '@/lib/domain/fx'
 import { normalizePlatformName } from '@/lib/domain/constants'
 import { todayLocalIso, computeDailyChange, type DailyChange } from '@/lib/domain/snapshot'
-import type { Investment, Transaction, InvestmentType } from '@/types/database'
+import type { Transaction, InvestmentType, CapitalFlowEntry } from '@/types/database'
+import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
+import { buildExternalCashFlowRows, externalFlowsForReturns } from '@/lib/domain/contributions'
+import { allTimeMoneyWeightedReturn } from '@/lib/domain/returns'
 
 type TxWithInvestment = Transaction & {
   investment: {
@@ -53,9 +59,9 @@ export default async function DashboardPage() {
 
   const todayIso = todayLocalIso()
 
-  const [invRes, txRes, recentRes, fxRes, latestSnapRes, prevSnapRes] = await Promise.all([
-    supabase.from('investments').select('*').returns<Investment[]>(),
-    supabase.from('transactions').select('*').returns<Transaction[]>(),
+  const [invRes, txRes, recentRes, fxRes, latestSnapRes, prevSnapRes, flowRes] = await Promise.all([
+    fetchAllInvestments(supabase),
+    fetchAllTransactions(supabase),
     supabase
       .from('transactions')
       .select('*, investment:investments(name, ticker, type)')
@@ -77,6 +83,9 @@ export default async function DashboardPage() {
       .order('date', { ascending: false })
       .limit(1)
       .maybeSingle(),
+    fetchAllRows<CapitalFlowEntry>((from, to) =>
+      supabase.from('capital_flow_entries').select('*').order('id', { ascending: true }).range(from, to).returns<CapitalFlowEntry[]>()
+    ),
   ])
 
   const investments = invRes.data ?? []
@@ -88,6 +97,9 @@ export default async function DashboardPage() {
   const previousSnap = prevSnapRes.data as { total_value_eur: number } | null
 
   const metrics = computePortfolioMetrics(investments, transactions, fxRates)
+  // All-time money-weighted return (XIRR) on EXTERNAL flows only.
+  const externalFlows = buildExternalCashFlowRows(flowRes.data ?? [], transactions)
+  const mwr = allTimeMoneyWeightedReturn(externalFlowsForReturns(externalFlows), metrics.totalValue, todayIso)
   const dailyChange: DailyChange = computeDailyChange(metrics.totalValue, previousSnap)
 
   const byCategory = computeAllocation(
@@ -127,6 +139,12 @@ export default async function DashboardPage() {
         </div>
       </div>
 
+      <DataQualityNotice
+        fxIncompleteCount={metrics.fxIncompleteCount}
+        fxLiveFallbackCount={metrics.fxLiveFallbackCount}
+        unfundedPlatforms={unfundedPlatforms(investments, transactions, flowRes.data ?? [], fxRates)}
+      />
+
       {isEmpty ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center">
           <p className="text-slate-900 font-medium">Welcome!</p>
@@ -142,7 +160,7 @@ export default async function DashboardPage() {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard
               label="Portfolio value"
               value={<PrivacyMoney value={metrics.totalValue} fallbackText="—" />}
@@ -171,11 +189,7 @@ export default async function DashboardPage() {
                   <PrivacyMoney
                     value={metrics.totalProfit}
                     signed
-                    fallbackText={
-                      metrics.totalProfitPct !== null
-                        ? `${metrics.totalProfitPct >= 0 ? '+' : ''}${pct(metrics.totalProfitPct)}`
-                        : '—'
-                    }
+                    fallbackText="—"
                   />
                 ) : (
                   '—'
@@ -186,7 +200,6 @@ export default async function DashboardPage() {
                   <>
                     <PrivacyGate>
                       <>
-                        {metrics.totalProfitPct !== null ? pct(metrics.totalProfitPct) : '—'} ·{' '}
                         {money(metrics.totalRealized, 'EUR')} realized ·{' '}
                         {money(metrics.totalUnrealized, 'EUR')} unrealized
                       </>
@@ -201,6 +214,30 @@ export default async function DashboardPage() {
                 )
               }
               tone={hasHistory ? profitTone : 'neutral'}
+            />
+            <StatCard
+              label="Money-weighted return (XIRR, secondary)"
+              value={mwr.annualRate !== null ? `${mwr.annualRate >= 0 ? '+' : ''}${pct(mwr.annualRate)} / yr` : '—'}
+              hint={
+                <>
+                  Depends on when and how much you added. For how your investments did, see{' '}
+                  <Link href="/returns" className="underline">Returns (time-weighted)</Link>.
+                  <br />
+                  <PrivacyGate fallback="Money-weighted, annualised.">
+                    <>
+                      Money-weighted, annualised: your {money(mwr.grossInEur, 'EUR')} deposits and{' '}
+                      {money(mwr.grossOutEur, 'EUR')} withdrawals (on their real dates) against today&apos;s value.
+                    </>
+                  </PrivacyGate>
+                  {mwr.unavailableReason && (
+                    <>
+                      <br />
+                      <span className="text-amber-700">{mwr.unavailableReason}</span>
+                    </>
+                  )}
+                </>
+              }
+              tone={mwr.annualRate === null ? 'neutral' : mwr.annualRate >= 0 ? 'positive' : 'negative'}
             />
           </div>
           <p className="text-xs text-slate-400 px-1">

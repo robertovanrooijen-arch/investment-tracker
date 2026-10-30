@@ -42,6 +42,12 @@ export type PortfolioAllocation = {
   categories: AllocationCategory[]
   /** Every holding across every category, flattened and sorted largest-first. */
   holdings: AllocationHolding[]
+  /**
+   * Positions whose EUR value is unknown (missing FX). Fail-closed: when > 0
+   * no allocation is returned (totalValue NaN, empty lists) instead of
+   * percentages computed over a partial total.
+   */
+  fxIncompleteCount: number
 }
 
 const CATEGORY_LABELS: Record<InvestmentType, string> = {
@@ -162,15 +168,24 @@ export function buildPortfolioAllocation(
   const rowsByType = new Map<InvestmentType, { inv: Investment; value: number }[]>()
   let totalValue = 0
 
+  let fxIncompleteCount = 0
   for (const inv of investments) {
     const { currentValue } = computeInvestmentMetrics(inv, transactions, fxRates)
-    if (currentValue <= 0) continue
+    if (Number.isNaN(currentValue)) {
+      fxIncompleteCount++
+      continue
+    }
+    if (!(currentValue > 0)) continue
 
     const bucket = rowsByType.get(inv.type)
     if (bucket) bucket.push({ inv, value: currentValue })
     else rowsByType.set(inv.type, [{ inv, value: currentValue }])
 
     totalValue += currentValue
+  }
+
+  if (fxIncompleteCount > 0) {
+    return { totalValue: NaN, categories: [], holdings: [], fxIncompleteCount }
   }
 
   const categories: AllocationCategory[] = []
@@ -198,7 +213,7 @@ export function buildPortfolioAllocation(
     .flatMap((c) => c.holdings.map((h) => ({ ...h, categoryLabel: c.label })))
     .sort((a, b) => b.value - a.value)
 
-  return { totalValue, categories, holdings }
+  return { totalValue, categories, holdings, fxIncompleteCount }
 }
 
 /**
