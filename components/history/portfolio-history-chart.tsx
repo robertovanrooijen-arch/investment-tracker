@@ -36,9 +36,11 @@ import type { InvestmentType } from '@/types/database'
 export type PortfolioSnapshot = {
   date: string
   total_value_eur: number
-  total_invested_eur: number
-  total_unrealized_eur: number
-  total_realized_eur: number
+  // Reconstructed Yahoo/ECB history can know total value without inventing
+  // a historical cost-basis or P/L split. Null means exactly that.
+  total_invested_eur: number | null
+  total_unrealized_eur: number | null
+  total_realized_eur: number | null
   snapshot_source: string
   // P/L definition version (see lib/domain/snapshot-method.ts); absent/null
   // means a row written before versioning → v1.
@@ -176,7 +178,8 @@ const STATIC_SERIES = [
 // ── Date formatters ────────────────────────────────────────────────────────
 
 function fmtLongDate(date: string): string {
-  return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
+  // Explicit locale keeps server and browser output identical during hydration.
+  return new Date(`${date}T00:00:00`).toLocaleDateString('en-GB', {
     weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
   })
 }
@@ -367,6 +370,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
         assetValue = snap.total_value_eur
       }
 
+      const hasProfitSplit = snap.total_realized_eur !== null && snap.total_unrealized_eur !== null
       const row: ChartRow = {
         date:                snap.date,
         // Main series: portfolio_snapshots only — always matches Dashboard
@@ -376,7 +380,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
         // 'total_profit_eur', older → its own key), so a method change is
         // never drawn as a market movement.
         [plSeriesKey('total_profit_eur', plDefinitionVersionOf(snap))]:
-                             snap.total_realized_eur + snap.total_unrealized_eur,
+                             hasProfitSplit ? snap.total_realized_eur! + snap.total_unrealized_eur! : null,
         // Breakdown series: investment_snapshots / livePoint
         invested_assets_eur: assetValue,
         cash_value_eur:      cashValue,
@@ -475,7 +479,11 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
 
   // P/L definition changes inside the visible range (see snapshot-method.ts).
   const plBreaks = useMemo(
-    () => findPlDefinitionBreaks(sampled.map((s) => ({ date: s.date, version: plDefinitionVersionOf(s) }))),
+    () => findPlDefinitionBreaks(
+      sampled
+        .filter((s) => s.total_realized_eur !== null && s.total_unrealized_eur !== null)
+        .map((s) => ({ date: s.date, version: plDefinitionVersionOf(s) }))
+    ),
     [sampled],
   )
   const hasLegacyProfit = displayData.some((r) => r[LEGACY_PROFIT_KEY] != null)

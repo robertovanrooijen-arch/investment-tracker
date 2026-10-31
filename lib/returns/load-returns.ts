@@ -53,6 +53,10 @@ export type ReturnsData = {
   anchorSource: string | null
   dataNotes: string[]
   investmentResult: InvestmentResult | null // null while a period's return is unavailable
+  // Daily, reconstructed portfolio values from the same Yahoo/ECB series and
+  // transaction ledger as the TWR. Used by History for the total-value line;
+  // it never fabricates historical cost basis or P/L fields.
+  reconstructedHistory: { date: string; valueEur: number }[]
 }
 
 const FLOW_KINDS: FlowKind[] = ['bank_deposit', 'round_up', 'saveback', 'external_reward', 'reused_sale_proceeds', 'withdrawal']
@@ -174,6 +178,7 @@ export async function loadReturns(supabase: SupabaseClient, today: string): Prom
   const periods: PeriodReturn[] = []
   let ytdOverview: { open: OpenPositionRow[]; closed: ClosedPositionRow[] } = { open: [], closed: [] }
   let sleeveNames: Record<string, string> = {}
+  let reconstructedHistory: ReturnsData['reconstructedHistory'] = []
   for (const def of defs) {
     const start = def.start < inception ? inception : def.start
     const ledger = buildTwrLedger({
@@ -194,6 +199,12 @@ export async function loadReturns(supabase: SupabaseClient, today: string): Prom
     if (def.key === 'ytd') {
       ytdOverview = buildPositionOverview({ investments, transactions, ledger, twr, prices, fxRates, periodStart: start, periodEnd: today })
       sleeveNames = Object.fromEntries(Object.entries(ledger.sleeves).map(([id, s]) => [id, s.kind === 'cash' ? s.name : `${s.name} (${s.platform})`]))
+    }
+    if (def.key === 'all') {
+      reconstructedHistory = [
+        ...(twr.startValueEur === null ? [] : [{ date: twr.startDate, valueEur: twr.startValueEur }]),
+        ...twr.daily.map((day) => ({ date: day.date, valueEur: day.valueEur })),
+      ]
     }
   }
   const all = periods.find((p) => p.key === 'all')!.twr
@@ -220,5 +231,6 @@ export async function loadReturns(supabase: SupabaseClient, today: string): Prom
     anchorSource: anchor ? [...new Set([...anchor.positions.map((p) => p.source), ...anchor.cash.map((c) => c.source)])].join(', ') : null,
     dataNotes,
     investmentResult,
+    reconstructedHistory,
   }
 }

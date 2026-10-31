@@ -10,14 +10,13 @@ import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import { AssetClassPerformanceTable } from '@/components/profit-loss/asset-class-performance-table'
 import type { ClassPerformanceRow } from '@/components/profit-loss/asset-class-performance-table'
 import { YtdBridgeBar } from '@/components/profit-loss/ytd-bridge-bar'
-import { computeInvestmentMetrics, computePortfolioMetrics, computePerformanceByCategory, pct } from '@/lib/domain/calculations'
+import { computeInvestmentMetrics, computePortfolioMetrics, computePerformanceByCategory } from '@/lib/domain/calculations'
 import { hasUnits, isCashLikeInvestment } from '@/lib/domain/constants'
-import { buildExternalCashFlowRows, externalFlowsForReturns } from '@/lib/domain/contributions'
-import { allTimeMoneyWeightedReturn } from '@/lib/domain/returns'
 import { PositionReturnsTable, type PositionReturnRow } from '@/components/profit-loss/position-returns-table'
-import type { PortfolioMetrics } from '@/lib/domain/calculations'
 import { categoryLabel } from '@/lib/domain/allocation'
 import { loadFxRates } from '@/lib/domain/fx'
+import { money } from '@/lib/format'
+import { loadReturns } from '@/lib/returns/load-returns'
 import {
   computeAssetYearRows,
   computeAssetClassYtd,
@@ -45,21 +44,12 @@ function tone(n: number | null): 'positive' | 'negative' | 'neutral' {
   return n > 0 ? 'positive' : 'negative'
 }
 
-// Privacy fallback for the Realized/Unrealized cards: each one's share of
-// combined |realized| + |unrealized| — a share of total P/L, not a return —
-// matching exactly what the Dashboard's Profit/Loss breakdown card shows,
-// so the two pages never disagree on this number either.
-function shareOfTotalPLText(n: number, metrics: PortfolioMetrics): string {
-  const absTotal = Math.abs(metrics.totalRealized) + Math.abs(metrics.totalUnrealized)
-  if (absTotal === 0) return '—'
-  return `${((Math.abs(n) / absTotal) * 100).toFixed(1)}% of total P/L`
-}
-
 export default async function ProfitLossDetailsPage() {
   const supabase = await createClient()
   const year = new Date().getFullYear()
+  const todayIso = new Date().toISOString().slice(0, 10)
 
-  const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes] = await Promise.all([
+  const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes, returnsData] = await Promise.all([
     fetchAllInvestments(supabase),
     fetchAllTransactions(supabase),
     loadFxRates(supabase),
@@ -86,6 +76,7 @@ export default async function ProfitLossDetailsPage() {
         .range(from, to)
         .returns<RawInvSnapRow[]>()
     ),
+    loadReturns(supabase, todayIso),
   ])
 
   const investments = invRes.data ?? []
@@ -118,16 +109,15 @@ export default async function ProfitLossDetailsPage() {
     )
   }
 
-  // ── A. Total performance — same all-time metrics the Dashboard shows ─────
+  // ── A. Total performance — the same canonical result and XIRR used by
+  // Dashboard, Returns and YTD. The legacy metrics remain only as a fallback
+  // when a historical source is incomplete.
   const liveMetrics = computePortfolioMetrics(investments, transactions, fxRates)
-  // All-time money-weighted return (XIRR) on EXTERNAL flows — the return
-  // figure for "total performance"; the euro P/L above has no honest
-  // single denominator.
-  const mwr = allTimeMoneyWeightedReturn(
-    externalFlowsForReturns(buildExternalCashFlowRows(capitalFlowEntries, transactions)),
-    liveMetrics.totalValue,
-    new Date().toISOString().slice(0, 10)
-  )
+  const mwr = returnsData.xirr
+  const canonicalResult = returnsData.investmentResult
+  const totalResult = canonicalResult?.sinceStart.totalEur ?? liveMetrics.totalProfit
+  const realisedResult = canonicalResult?.sinceStart.realisedEur ?? liveMetrics.totalRealized
+  const unrealisedResult = canonicalResult?.sinceStart.unrealisedEndEur ?? liveMetrics.totalUnrealized
 
   // Realized (sold) and unrealized (held) result per position.
   const positionRows: PositionReturnRow[] = investments
@@ -239,74 +229,74 @@ export default async function ProfitLossDetailsPage() {
       {/* A. Total performance */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard
-          label="Total return"
+          label="Total investment result"
           value={
             <PrivacyMoney
-              value={liveMetrics.totalProfit}
+              value={totalResult}
               signed
-              fallbackText={mwr.annualRate !== null ? `${pct(mwr.annualRate)} / yr XIRR` : '—'}
+              fallbackText={mwr.annualRate !== null ? `${fmtPercent(mwr.annualRate * 100)} / yr XIRR` : '—'}
             />
           }
           hint={
             <>
-              All-time cost-basis P/L in euros.{' '}
+              Realised and unrealised result, dividends and interest, minus separate costs and taxes.{' '}
               {mwr.annualRate !== null
-                ? `Money-weighted return (XIRR): ${mwr.annualRate >= 0 ? '+' : ''}${pct(mwr.annualRate)} per year on your external deposits and withdrawals.`
+                ? `Your personal money-weighted return (XIRR): ${fmtPercent(mwr.annualRate * 100)} per year.`
                 : `No XIRR: ${mwr.unavailableReason ?? 'not enough data'}`}
             </>
           }
-          tone={tone(liveMetrics.totalProfit)}
+          tone={tone(totalResult)}
         />
         <StatCard
           label="Realized"
           value={
             <PrivacyMoney
-              value={liveMetrics.totalRealized}
+              value={realisedResult}
               signed
-              fallbackText={shareOfTotalPLText(liveMetrics.totalRealized, liveMetrics)}
+              fallbackText="Closed and partly sold positions"
             />
           }
-          tone={tone(liveMetrics.totalRealized)}
+          tone={tone(realisedResult)}
         />
         <StatCard
           label="Unrealized"
           value={
             <PrivacyMoney
-              value={liveMetrics.totalUnrealized}
+              value={unrealisedResult}
               signed
-              fallbackText={shareOfTotalPLText(liveMetrics.totalUnrealized, liveMetrics)}
+              fallbackText="Open positions"
             />
           }
-          tone={tone(liveMetrics.totalUnrealized)}
+          tone={tone(unrealisedResult)}
         />
       </div>
 
       {/* B. YTD performance */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <StatCard
-          label={`YTD return (${year})`}
+          label={`Investment result YTD (${year})`}
           value={
             <PrivacyMoney
-              value={yearSummary.growthExcludingContributionsEur}
+              value={canonicalResult?.period.totalEur ?? yearSummary.growthExcludingContributionsEur}
               signed
-              fallbackText={fmtPercent(yearSummary.modifiedDietzReturnPercent)}
+              fallbackText={returnsData.ytd.twr === null ? '—' : fmtPercent(returnsData.ytd.twr * 100)}
             />
           }
           hint={
-            yearSummary.growthExcludingContributionsEur !== null ? (
+            returnsData.ytd.twr !== null ? (
               <PrivacyGate>
-                <>{fmtPercent(yearSummary.modifiedDietzReturnPercent)} · Modified Dietz, since Jan 1</>
+                <>{fmtPercent(returnsData.ytd.twr * 100)} · time-weighted return, since Jan 1</>
               </PrivacyGate>
             ) : (
-              'No reliable start-of-year value yet'
+              returnsData.ytd.missing[0]?.reason ?? 'No reliable historical valuation yet'
             )
           }
-          tone={tone(yearSummary.growthExcludingContributionsEur)}
+          tone={tone(canonicalResult?.period.totalEur ?? yearSummary.growthExcludingContributionsEur)}
         />
         <StatCard
-          label="Net contributions YTD"
-          value={<PrivacyMoney value={yearSummary.netContributionsEur} signed fallbackText="—" />}
-          hint="Deposits minus withdrawals since Jan 1 — excluded from investment profit."
+          label="Own money added YTD"
+          value={<PrivacyMoney value={returnsData.contributionsYtd.grossOwnContributionsEur} fallbackText="—" />}
+          hint={`${money(returnsData.contributionsYtd.grossPlatformContributionsEur, 'EUR')} platform-funded · re-used sale proceeds excluded`}
         />
       </div>
 
@@ -314,8 +304,8 @@ export default async function ProfitLossDetailsPage() {
       <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
         <h2 className="text-base font-semibold text-slate-900 mb-1">Performance by asset class</h2>
         <p className="text-sm text-slate-500 mb-4">
-          YTD = selected-year return after contributions (Modified Dietz). Total = all-time, cost-basis return
-          since each position was opened. Cash excluded.
+          Portfolio YTD uses the same time-weighted engine as Returns. The rows below show each asset class on its
+          own historical basis. Cash is excluded from the asset-class comparison.
         </p>
         <AssetClassPerformanceTable rows={classRows} />
       </div>

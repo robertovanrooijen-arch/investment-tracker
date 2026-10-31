@@ -12,7 +12,7 @@ import { PortfolioBridgeChart, AssetClassYtdChart } from '@/components/year-anal
 import { MonthlyPerformanceTable, BestWorstCards, AssetBreakdownTable } from '@/components/ytd/ytd-components'
 import { computePortfolioMetrics } from '@/lib/domain/calculations'
 import { loadFxRates } from '@/lib/domain/fx'
-import { fmtDate } from '@/lib/format'
+import { fmtDate, money } from '@/lib/format'
 import {
   computeAssetYearRows,
   computeAssetClassSummaries,
@@ -26,6 +26,7 @@ import {
 import type { CapitalFlowEntryForYear, InvestmentSnapshotForYtd } from '@/lib/domain/year-analysis'
 import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import type { InvestmentType } from '@/types/database'
+import { loadReturns } from '@/lib/returns/load-returns'
 
 type RawPortfolioSnapshot = {
   date: string
@@ -58,7 +59,7 @@ export default async function YtdPage() {
   const yearStartIso = `${year}-01-01`
   const todayIso = new Date().toISOString().slice(0, 10)
 
-  const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes] = await Promise.all([
+  const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes, returnsData] = await Promise.all([
     fetchAllInvestments(supabase),
     fetchAllTransactions(supabase),
     loadFxRates(supabase),
@@ -86,6 +87,7 @@ export default async function YtdPage() {
         .range(from, to)
         .returns<RawInvSnapRow[]>()
     ),
+    loadReturns(supabase, todayIso),
   ])
 
   const investments = invRes.data ?? []
@@ -143,6 +145,7 @@ export default async function YtdPage() {
     transactions,
     liveMetrics.totalValue
   )
+  const canonicalYtd = returnsData.ytd
 
   // Edge case: user started investing during the current year, so there is
   // genuinely no snapshot at/before Jan 1 — startValueEur comes back null.
@@ -197,18 +200,26 @@ export default async function YtdPage() {
     byType: Array.from(byTypeMap.entries()).map(([type, value]) => ({ type: type as InvestmentType, value })),
   }
 
+  const storedYtdByDate = new Map(rawSnapshots.filter((s) => s.date >= yearStartIso).map((s) => [s.date, s]))
+  const reconstructedYtd = returnsData.reconstructedHistory
+    .filter((point) => point.date >= yearStartIso && point.date !== todayIso)
+    .map((point): ChartPortfolioSnapshot => {
+      const stored = storedYtdByDate.get(point.date)
+      return {
+        date: point.date,
+        total_value_eur: point.valueEur,
+        total_invested_eur: stored?.total_invested_eur ?? null,
+        total_unrealized_eur: stored?.total_unrealized_eur ?? null,
+        total_realized_eur: stored?.total_realized_eur ?? null,
+        snapshot_source: stored?.snapshot_source ?? 'reconstructed_yahoo_ecb',
+        pl_definition_version: stored?.pl_definition_version ?? CURRENT_PL_DEFINITION_VERSION,
+      }
+    })
+  const reconstructedYtdDates = new Set(reconstructedYtd.map((s) => s.date))
   const ytdChartSnapshots: ChartPortfolioSnapshot[] = [
     ...rawSnapshots
-      .filter((s) => s.date >= yearStartIso && s.date !== todayIso)
-      .map((s) => ({
-        date: s.date,
-        total_value_eur: s.total_value_eur,
-        total_invested_eur: s.total_invested_eur,
-        total_unrealized_eur: s.total_unrealized_eur,
-        total_realized_eur: s.total_realized_eur,
-        snapshot_source: s.snapshot_source,
-        pl_definition_version: s.pl_definition_version,
-      })),
+      .filter((s) => s.date >= yearStartIso && s.date !== todayIso && !reconstructedYtdDates.has(s.date)),
+    ...reconstructedYtd,
     {
       date: todayIso,
       total_value_eur: liveMetrics.totalValue,
@@ -228,9 +239,6 @@ export default async function YtdPage() {
       remaining_cost_basis_eur: Number(r.remaining_cost_basis_eur),
       type: r.investment!.type,
     }))
-
-  const tone = (n: number | null) =>
-    n === null || n === 0 ? 'neutral' : n > 0 ? 'positive' : 'negative'
 
   // Earliest REAL portfolio_snapshots row this year — underlying data
   // coverage, deliberately BEFORE any downsampling. This describes what
@@ -272,32 +280,25 @@ export default async function YtdPage() {
           hint="Current live value, EUR"
         />
         <StatCard
-          label="YTD return"
-          value={
-            <PrivacyMoney
-              value={summary.growthExcludingContributionsEur}
-              signed
-              fallbackText={fmtPercent(summary.modifiedDietzReturnPercent)}
-            />
-          }
+          label="Portfolio return YTD (TWR)"
+          value={canonicalYtd.twr === null ? '—' : fmtPercent(canonicalYtd.twr * 100)}
           hint={
-            summary.modifiedDietzReturnPercent !== null ? (
-              <PrivacyGate fallback={`Modified Dietz, ${summary.startValueDate} → ${summary.endValueDate}`}>
+            canonicalYtd.status === 'ok' ? (
+              <PrivacyGate fallback="Time-weighted return">
                 <>
-                  {fmtPercent(summary.modifiedDietzReturnPercent)} · Modified Dietz, {summary.startValueDate} →{' '}
-                  {summary.endValueDate}
+                  <PrivacyMoney value={returnsData.investmentResult?.period.totalEur ?? null} signed fallbackText="—" /> investment result · cash-flow timing removed
                 </>
               </PrivacyGate>
             ) : (
-              'No reliable start-of-year value yet'
+              canonicalYtd.missing[0]?.reason ?? 'Return unavailable because historical data is incomplete'
             )
           }
-          tone={tone(summary.growthExcludingContributionsEur)}
+          tone={canonicalYtd.twr === null ? 'neutral' : canonicalYtd.twr > 0 ? 'positive' : canonicalYtd.twr < 0 ? 'negative' : 'neutral'}
         />
         <StatCard
-          label="Net contributions YTD"
-          value={<PrivacyMoney value={summary.netContributionsEur} signed fallbackText="—" />}
-          hint="Deposits minus withdrawals since Jan 1"
+          label="Own money added YTD"
+          value={<PrivacyMoney value={returnsData.contributionsYtd.grossOwnContributionsEur} fallbackText="—" />}
+          hint={`${money(returnsData.contributionsYtd.grossPlatformContributionsEur, 'EUR')} platform-funded · re-used sale proceeds excluded`}
         />
         <StatCard
           label="Start-of-year value"
@@ -313,11 +314,9 @@ export default async function YtdPage() {
       </div>
 
       <p className="text-xs text-slate-400 px-1">
-        YTD return (€) = current value − start-of-year value − net external contributions, so deposits and
-        withdrawals are not counted as performance. YTD % (Modified Dietz) = that euro result ÷ (start value + each
-        external flow weighted by the share of the period it was invested). Only money moving between your bank and a
-        platform counts as a flow; buys, sales and re-investments do not. Market YTD per instrument (on Investment
-        Performance) is a different question: the price change of the instrument itself.
+        Portfolio return uses the same daily time-weighted engine as Returns. New money is removed on its real date;
+        sales and re-investments stay inside the portfolio and never become contributions. Market YTD per instrument
+        is a different question: the price change of that instrument itself.
       </p>
 
       {/* Main chart */}
@@ -327,14 +326,14 @@ export default async function YtdPage() {
         </div>
         {hasHistoryGapAtStart && (
           <p className="mb-3 text-xs text-slate-400">
-            Portfolio history is available from {fmtDate(firstRealSnapshotIso)}. The chart may aggregate earlier
-            observations depending on the selected time range. YTD calculations above still include the full year.
+            The total-value line is reconstructed for the full year from transactions, Yahoo closes and ECB exchange
+            rates. Detailed stored cost-basis and profit/loss snapshots start on {fmtDate(firstRealSnapshotIso)}.
           </p>
         )}
         {hasNoRealSnapshotsThisYear && (
           <p className="mb-3 text-xs text-slate-400">
-            No historical snapshots recorded yet this year — showing today&apos;s live value only. YTD calculations
-            above still include the full year.
+            The total-value line is reconstructed from transactions, Yahoo closes and ECB exchange rates. No stored
+            historical cost-basis or profit/loss snapshots are available yet.
           </p>
         )}
         <PortfolioHistoryChart

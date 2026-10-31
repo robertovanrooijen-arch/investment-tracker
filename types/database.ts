@@ -214,6 +214,9 @@ export type CapitalFlowKind =
   | 'round_up'
   | 'order_payment'
   | 'sale_payout'
+  | 'reused_sale_proceeds'
+  | 'external_reward'
+  | 'internal_transfer'
   | 'other'
   // Amount and direction are certain; the economic label is not yet known
   // (e.g. a Trade Republic savings-plan execution without visible funding).

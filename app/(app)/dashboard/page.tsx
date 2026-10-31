@@ -20,8 +20,7 @@ import { normalizePlatformName } from '@/lib/domain/constants'
 import { todayLocalIso, computeDailyChange, type DailyChange } from '@/lib/domain/snapshot'
 import type { Transaction, InvestmentType, CapitalFlowEntry } from '@/types/database'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
-import { buildExternalCashFlowRows, externalFlowsForReturns } from '@/lib/domain/contributions'
-import { allTimeMoneyWeightedReturn } from '@/lib/domain/returns'
+import { loadReturns } from '@/lib/returns/load-returns'
 
 type TxWithInvestment = Transaction & {
   investment: {
@@ -59,7 +58,7 @@ export default async function DashboardPage() {
 
   const todayIso = todayLocalIso()
 
-  const [invRes, txRes, recentRes, fxRes, latestSnapRes, prevSnapRes, flowRes] = await Promise.all([
+  const [invRes, txRes, recentRes, fxRes, latestSnapRes, prevSnapRes, flowRes, returnsData] = await Promise.all([
     fetchAllInvestments(supabase),
     fetchAllTransactions(supabase),
     supabase
@@ -86,6 +85,7 @@ export default async function DashboardPage() {
     fetchAllRows<CapitalFlowEntry>((from, to) =>
       supabase.from('capital_flow_entries').select('*').order('id', { ascending: true }).range(from, to).returns<CapitalFlowEntry[]>()
     ),
+    loadReturns(supabase, todayIso),
   ])
 
   const investments = invRes.data ?? []
@@ -97,9 +97,10 @@ export default async function DashboardPage() {
   const previousSnap = prevSnapRes.data as { total_value_eur: number } | null
 
   const metrics = computePortfolioMetrics(investments, transactions, fxRates)
-  // All-time money-weighted return (XIRR) on EXTERNAL flows only.
-  const externalFlows = buildExternalCashFlowRows(flowRes.data ?? [], transactions)
-  const mwr = allTimeMoneyWeightedReturn(externalFlowsForReturns(externalFlows), metrics.totalValue, todayIso)
+  // Canonical returns engine: the Dashboard shows the exact same XIRR and
+  // TWR definitions as /returns, rather than recomputing a local variant.
+  const mwr = returnsData.xirr
+  const ytdReturn = returnsData.periods.find((p) => p.key === 'ytd')?.twr.twr ?? null
   const dailyChange: DailyChange = computeDailyChange(metrics.totalValue, previousSnap)
 
   const byCategory = computeAllocation(
@@ -216,19 +217,26 @@ export default async function DashboardPage() {
               tone={hasHistory ? profitTone : 'neutral'}
             />
             <StatCard
-              label="Money-weighted return (XIRR, secondary)"
+              label="Your personal return (XIRR)"
               value={mwr.annualRate !== null ? `${mwr.annualRate >= 0 ? '+' : ''}${pct(mwr.annualRate)} / yr` : '—'}
               hint={
                 <>
-                  Depends on when and how much you added. For how your investments did, see{' '}
-                  <Link href="/returns" className="underline">Returns (time-weighted)</Link>.
+                  Your annualised return, based on the actual dates when money entered or left your portfolio.
                   <br />
                   <PrivacyGate fallback="Money-weighted, annualised.">
                     <>
-                      Money-weighted, annualised: your {money(mwr.grossInEur, 'EUR')} deposits and{' '}
-                      {money(mwr.grossOutEur, 'EUR')} withdrawals (on their real dates) against today&apos;s value.
+                      The calculation uses {money(mwr.grossInEur, 'EUR')} entering and{' '}
+                      {money(mwr.grossOutEur, 'EUR')} leaving on their real dates. Selling and reinvesting inside the portfolio is not a contribution.
                     </>
                   </PrivacyGate>
+                  {ytdReturn !== null && (
+                    <>
+                      <br />
+                      <Link href="/returns" className="underline">
+                        Portfolio return YTD: {ytdReturn >= 0 ? '+' : ''}{(ytdReturn * 100).toFixed(2)}% (time-weighted)
+                      </Link>
+                    </>
+                  )}
                   {mwr.unavailableReason && (
                     <>
                       <br />

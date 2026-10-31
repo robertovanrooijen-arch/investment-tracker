@@ -38,6 +38,7 @@ import {
   AssetPnlRankingChart,
   MonthlyCashflowChart,
 } from '@/components/year-analysis/charts'
+import { loadReturns } from '@/lib/returns/load-returns'
 
 export const dynamic = 'force-dynamic'
 
@@ -144,8 +145,9 @@ export default async function YearAnalysisPage({
   searchParams: Promise<{ year?: string }>
 }) {
   const supabase = await createClient()
+  const todayIso = new Date().toISOString().slice(0, 10)
 
-  const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes] = await Promise.all([
+  const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes, returnsData] = await Promise.all([
     fetchAllInvestments(supabase),
     fetchAllTransactions(supabase),
     loadFxRates(supabase),
@@ -178,6 +180,7 @@ export default async function YearAnalysisPage({
         .range(from, to)
         .returns<InvestmentSnapshotForYtd[]>()
     ),
+    loadReturns(supabase, todayIso),
   ])
 
   const investments = invRes.data ?? []
@@ -233,8 +236,14 @@ export default async function YearAnalysisPage({
     liveMetrics
   )
 
-  const showSnapshotWarning = summary.startSnapshotMissing || summary.endSnapshotMissing
   const isCurrentYear = year === new Date().getFullYear()
+  const showSnapshotWarning = !isCurrentYear && (summary.startSnapshotMissing || summary.endSnapshotMissing)
+  const selectedYearReturnPercent = isCurrentYear && returnsData.ytd.twr !== null
+    ? returnsData.ytd.twr * 100
+    : summary.modifiedDietzReturnPercent
+  const selectedYearResultEur = isCurrentYear
+    ? returnsData.investmentResult?.period.totalEur ?? summary.growthExcludingContributionsEur
+    : summary.growthExcludingContributionsEur
 
   return (
     <div className="space-y-6">
@@ -322,54 +331,50 @@ export default async function YearAnalysisPage({
           hint={summary.endValueIsLive ? `Live value, as of ${summary.endValueDate}` : `As of ${summary.endValueDate}`}
         />
         <StatCard
-          label="Net contributions"
+          label={isCurrentYear ? 'Own money added' : 'Net external cash flow'}
           value={
             <PrivacyMoney
-              value={summary.netContributionsEur}
-              signed
-              fallbackText={summary.netContributionsPercent !== null ? `${pctCell(summary.netContributionsPercent)} of start` : '—'}
+              value={isCurrentYear ? returnsData.contributionsYtd.grossOwnContributionsEur : summary.netContributionsEur}
+              signed={!isCurrentYear}
+              fallbackText="—"
             />
           }
           hint={
-            summary.netContributionsPercent !== null ? (
-              <PrivacyGate fallback="External cash to/from the portfolio">
-                <>{pctCell(summary.netContributionsPercent)} of start value · external cash to/from the portfolio</>
-              </PrivacyGate>
-            ) : (
-              'External cash moved to/from the portfolio this year'
-            )
+            isCurrentYear
+              ? `${money(returnsData.contributionsYtd.grossPlatformContributionsEur, 'EUR')} platform-funded · re-used sale proceeds excluded`
+              : 'All external money in minus all external money out; this is not personal contributions.'
           }
         />
         <StatCard
-          label="Growth after contributions"
+          label={isCurrentYear ? 'Investment result' : 'Growth after external cash flows'}
           value={
             <PrivacyMoney
-              value={summary.growthExcludingContributionsEur}
+              value={selectedYearResultEur}
               signed
-              fallbackText={pctCell(summary.modifiedDietzReturnPercent)}
+              fallbackText={pctCell(selectedYearReturnPercent)}
             />
           }
-          hint="Selected-year value change after removing external cashflows."
+          hint={isCurrentYear ? 'Canonical result from the same engine as Returns and YTD.' : 'Selected-year value change after removing external cash flows.'}
           tone={
-            summary.growthExcludingContributionsEur === null
+            selectedYearResultEur === null
               ? 'neutral'
-              : summary.growthExcludingContributionsEur > 0
+              : selectedYearResultEur > 0
                 ? 'positive'
-                : summary.growthExcludingContributionsEur < 0
+                : selectedYearResultEur < 0
                   ? 'negative'
                   : 'neutral'
           }
         />
         <StatCard
-          label="Modified Dietz return"
-          value={pctCell(summary.modifiedDietzReturnPercent)}
-          hint="Approximate selected-year return adjusted for cashflow timing."
+          label={isCurrentYear ? 'Portfolio return YTD (TWR)' : 'Modified Dietz return'}
+          value={pctCell(selectedYearReturnPercent)}
+          hint={isCurrentYear ? 'Time-weighted return from the same daily engine as Returns.' : 'Approximate selected-year return adjusted for cash-flow timing.'}
           tone={
-            summary.modifiedDietzReturnPercent === null
+            selectedYearReturnPercent === null
               ? 'neutral'
-              : summary.modifiedDietzReturnPercent > 0
+              : selectedYearReturnPercent > 0
                 ? 'positive'
-                : summary.modifiedDietzReturnPercent < 0
+                : selectedYearReturnPercent < 0
                   ? 'negative'
                   : 'neutral'
           }
@@ -391,8 +396,8 @@ export default async function YearAnalysisPage({
           value={signedMoney(summary.totalPLEur)}
           hint={
             summary.totalProfitLossPercent !== null
-              ? `${pctCell(summary.totalProfitLossPercent)} of current cost basis. Not the same as selected-year return — use Growth after contributions / Modified Dietz for performance.`
-              : 'Not the same as selected-year return — use Growth after contributions / Modified Dietz for performance.'
+              ? `${pctCell(summary.totalProfitLossPercent)} of current cost basis. Not the same as the selected-year return — use ${isCurrentYear ? 'Portfolio return YTD (TWR)' : 'Growth after external cash flows / Modified Dietz'} for performance.`
+              : `Not the same as the selected-year return — use ${isCurrentYear ? 'Portfolio return YTD (TWR)' : 'Growth after external cash flows / Modified Dietz'} for performance.`
           }
           tone={summary.totalPLEur > 0 ? 'positive' : summary.totalPLEur < 0 ? 'negative' : 'neutral'}
         />
@@ -402,17 +407,18 @@ export default async function YearAnalysisPage({
       <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
         <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between mb-4">
           <h2 className="text-base font-semibold text-slate-900">Portfolio bridge — {year}</h2>
-          {summary.modifiedDietzReturnPercent !== null && (
+          {selectedYearReturnPercent !== null && (
             <p className="text-sm font-medium text-slate-700">
-              Approx. return: <span className={plClass(summary.modifiedDietzReturnPercent)}>{pctCell(summary.modifiedDietzReturnPercent)}</span>{' '}
-              <span className="font-normal text-slate-400">Modified Dietz</span>
+              Return: <span className={plClass(selectedYearReturnPercent)}>{pctCell(selectedYearReturnPercent)}</span>{' '}
+              <span className="font-normal text-slate-400">{isCurrentYear ? 'time-weighted' : 'Modified Dietz (approx.)'}</span>
             </p>
           )}
         </div>
         <PortfolioBridgeChart steps={bridgeData} />
         <p className="mt-3 text-xs text-slate-400">
-          Accounts for the timing of contributions. Still approximate because current prices/FX may be used instead
-          of exact historical values.
+          {isCurrentYear
+            ? 'The headline return uses daily time-weighted linking, so the timing and size of contributions do not distort performance.'
+            : 'Modified Dietz accounts approximately for contribution timing; current prices/FX may still be used where exact historical values are missing.'}
         </p>
       </div>
 
@@ -687,7 +693,11 @@ export default async function YearAnalysisPage({
       <ul className="text-xs text-slate-400 leading-relaxed px-1 space-y-1 list-disc list-inside">
         <li>Cash is included in portfolio value, but excluded from investment P/L.</li>
         <li>Current open-position P/L uses current prices/FX, not historical prices.</li>
-        <li>Growth after contributions is the selected-year euro result; Modified Dietz is the selected-year % return, adjusted for contribution timing.</li>
+        <li>
+          {isCurrentYear
+            ? 'Investment result and Portfolio return YTD use the same canonical daily engine as Returns and YTD.'
+            : 'Growth after external cash flows is the selected-year euro result; Modified Dietz is the approximate selected-year return.'}
+        </li>
       </ul>
     </div>
   )

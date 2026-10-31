@@ -17,6 +17,7 @@ import { categoryLabel } from '@/lib/domain/allocation'
 import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import type { InvestmentType } from '@/types/database'
 import type { LivePoint } from '@/components/history/portfolio-history-chart'
+import { loadReturns } from '@/lib/returns/load-returns'
 
 export const dynamic = 'force-dynamic'
 
@@ -40,9 +41,9 @@ const TYPE_COLORS: Record<string, string> = {
 type PortfolioSnapshotRow = {
   date: string
   total_value_eur: number
-  total_invested_eur: number
-  total_unrealized_eur: number
-  total_realized_eur: number
+  total_invested_eur: number | null
+  total_unrealized_eur: number | null
+  total_realized_eur: number | null
   snapshot_source: string
   pl_definition_version: number | null
 }
@@ -61,7 +62,7 @@ export default async function HistoryPage() {
   const supabase = await createClient()
   const todayIso = new Date().toISOString().slice(0, 10)
 
-  const [portfolioRes, invSnapshotRes, invRes, txRes, fxRes] = await Promise.all([
+  const [portfolioRes, invSnapshotRes, invRes, txRes, fxRes, returnsData] = await Promise.all([
     supabase
       .from('portfolio_snapshots')
       // '*' so pl_definition_version is included once migration M7 adds it.
@@ -79,15 +80,16 @@ export default async function HistoryPage() {
     fetchAllInvestments(supabase),
     fetchAllTransactions(supabase),
     loadFxRates(supabase),
+    loadReturns(supabase, todayIso),
   ])
 
   // Postgres `numeric` columns can come back as strings via supabase-js; coerce.
   const rawPortfolioSnapshots: PortfolioSnapshotRow[] = (portfolioRes.data ?? []).map((row) => ({
     date: String(row.date),
     total_value_eur: Number(row.total_value_eur),
-    total_invested_eur: Number(row.total_invested_eur),
-    total_unrealized_eur: Number(row.total_unrealized_eur),
-    total_realized_eur: Number(row.total_realized_eur ?? 0),
+    total_invested_eur: row.total_invested_eur == null ? null : Number(row.total_invested_eur),
+    total_unrealized_eur: row.total_unrealized_eur == null ? null : Number(row.total_unrealized_eur),
+    total_realized_eur: row.total_realized_eur == null ? null : Number(row.total_realized_eur),
     snapshot_source: String(row.snapshot_source ?? ''),
     pl_definition_version: row.pl_definition_version == null ? null : Number(row.pl_definition_version),
   }))
@@ -158,8 +160,26 @@ export default async function HistoryPage() {
     pl_definition_version: CURRENT_PL_DEFINITION_VERSION,
   }
 
+  // Yahoo/ECB + transactions reconstruct the total-value line every day.
+  // Stored snapshots still provide cost basis and P/L where those fields are
+  // genuinely known; null elsewhere prevents fabricated historical lines.
+  const storedByDate = new Map(rawPortfolioSnapshots.map((s) => [s.date, s]))
+  const reconstructed = returnsData.reconstructedHistory.map((point): PortfolioSnapshotRow => {
+    const stored = storedByDate.get(point.date)
+    return {
+      date: point.date,
+      total_value_eur: point.valueEur,
+      total_invested_eur: stored?.total_invested_eur ?? null,
+      total_unrealized_eur: stored?.total_unrealized_eur ?? null,
+      total_realized_eur: stored?.total_realized_eur ?? null,
+      snapshot_source: stored?.snapshot_source ?? 'reconstructed_yahoo_ecb',
+      pl_definition_version: stored?.pl_definition_version ?? CURRENT_PL_DEFINITION_VERSION,
+    }
+  })
+  const reconstructedDates = new Set(reconstructed.map((s) => s.date))
   const portfolioSnapshots: PortfolioSnapshotRow[] = [
-    ...rawPortfolioSnapshots.filter((s) => s.date !== todayIso),
+    ...rawPortfolioSnapshots.filter((s) => !reconstructedDates.has(s.date) && s.date !== todayIso),
+    ...reconstructed.filter((s) => s.date !== todayIso),
     todaySnap,
   ].sort((a, b) => (a.date < b.date ? -1 : 1))
 
@@ -336,6 +356,13 @@ export default async function HistoryPage() {
         title="Portfolio history"
         subtitle="How your portfolio value has changed over time, in EUR."
       />
+
+      <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
+        The total-value history is rebuilt when this page opens from your transactions, Yahoo daily closes and ECB
+        exchange rates. Stored broker snapshots remain the source for historical cost basis and profit/loss. Listed
+        shares and ETFs therefore update automatically; metal history remains a market benchmark rather than a
+        dealer statement value.
+      </p>
 
       {/* Section 1: Portfolio overview */}
       <div className="space-y-4">
