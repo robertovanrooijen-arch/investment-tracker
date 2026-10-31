@@ -78,7 +78,8 @@ function fmtYAxis(n: number, mode: MetricMode): string {
 }
 
 function fmtLongDate(date: string): string {
-  return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
+  // Explicit locale keeps server and browser output identical during hydration.
+  return new Date(`${date}T00:00:00`).toLocaleDateString('en-GB', {
     weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
   })
 }

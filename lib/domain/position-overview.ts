@@ -33,6 +33,9 @@ export type OpenPositionRow = {
   personalReturn: number | null // see PERSONAL_RETURN_EXPLANATION
   hasRebuysAfterSale: boolean
   unrealizedEur: number
+  // Realised on units of THIS position sold in the period (partial sales);
+  // the units still held are in unrealizedEur — never both.
+  realizedInPeriodEur: number
   periodGainEur: number | null // from the TWR ledger (value change + income − costs in the period)
   contribution: number | null // percentage points of the portfolio TWR (fraction)
   ownTwr: number | null
@@ -182,6 +185,7 @@ export function buildPositionOverview(args: {
       personalReturn: cycle.buys > 0 && Number.isFinite(personalResult) ? personalResult / cycle.buys : null,
       hasRebuysAfterSale,
       unrealizedEur: endValue - costEur,
+      realizedInPeriodEur: netProceedsEur - soldCostEur,
       periodGainEur: sleeve?.gainEur ?? null,
       contribution: sleeve?.contribution ?? null,
       ownTwr: sleeve?.ownReturn ?? null,

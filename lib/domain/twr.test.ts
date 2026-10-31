@@ -441,4 +441,46 @@ describe('TWR engine', () => {
     assert.equal(result.twr.externalInEur, 2.42)
     assert.equal(result.twr.reconciled, true)
   })
+
+  test('a transient broker cash deficit that settles within three days is not missing funding', () => {
+    const a = inv({ id: 'transient-cash', platform: 'DEGIRO' })
+    const connectionFee = tx({
+      investment_id: a.id, type: 'fee', date: '2025-04-02', amount: 1.79,
+      notes: 'DEGIRO Aansluitingskosten 2025',
+    })
+    const dividend = tx({
+      investment_id: a.id, type: 'interest', date: '2025-04-03', amount: 2.61,
+      notes: 'Cash credit received one day later',
+    })
+    const result = run({
+      investments: [a], transactions: [connectionFee, dividend], flows: [], prices: [],
+      start: '2025-04-01', end: '2025-04-04',
+    })
+    close(result.ledger.cashByPlatform.DEGIRO.find((row) => row.date === '2025-04-02')?.valueEur, -1.79)
+    close(result.ledger.cashByPlatform.DEGIRO.at(-1)?.valueEur, 0.82)
+    assert.ok(!result.ledger.qualityIssues.some((i) => i.kind === 'cash_shortfall'))
+    assert.ok(!result.ledger.notes.some((note) => note.includes('purchases without recorded funding')))
+    assert.ok(result.ledger.input.days
+      .flatMap((day) => day.sleeves)
+      .filter((sleeve) => sleeve.sleeve === cashSleeve('DEGIRO'))
+      .every((sleeve) => sleeve.quality === 'reconstructed'))
+  })
+
+  test('a broker cash deficit that does not settle remains visible as missing funding', () => {
+    const a = inv({ id: 'persistent-cash', platform: 'DEGIRO' })
+    const connectionFee = tx({
+      investment_id: a.id, type: 'fee', date: '2025-04-02', amount: 1.79,
+      notes: 'DEGIRO Aansluitingskosten 2025',
+    })
+    const result = run({
+      investments: [a], transactions: [connectionFee], flows: [], prices: [],
+      start: '2025-04-01', end: '2025-04-06',
+    })
+    assert.ok(result.ledger.qualityIssues.some((i) => i.kind === 'cash_shortfall'))
+    assert.ok(result.ledger.notes.some((note) => note.includes('purchases without recorded funding')))
+    assert.ok(result.ledger.input.days
+      .flatMap((day) => day.sleeves)
+      .filter((sleeve) => sleeve.sleeve === cashSleeve('DEGIRO'))
+      .some((sleeve) => sleeve.quality === 'estimated'))
+  })
 })

@@ -10,18 +10,22 @@ import { buildExternalCashFlowRows, type ContribRow } from '@/lib/domain/contrib
 import { deriveAvailableYears } from '@/lib/domain/available-years'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PrivacyGate } from '@/components/ui/privacy-value'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
+import {
+  classifyReturnFlows,
+  FLOW_KIND_LABEL,
+  summarizeContributions,
+  type FlowKind,
+} from '@/lib/domain/flow-classification'
 
 export const dynamic = 'force-dynamic'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 type ContribTx = Transaction & { investment: { platform: string } | null }
+type CapitalFlowWithKind = CapitalFlowEntry & { flow_kind?: string | null }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-
-function sumEur(entries: ContribRow[]): number {
-  return entries.reduce((s, e) => s + Number(e.amount_eur), 0)
-}
 
 function directionLabel(d: string): string {
   return d === 'to_portfolio' ? 'To portfolio' : 'From portfolio'
@@ -33,8 +37,10 @@ function directionBadgeClass(d: string): string {
     : 'bg-rose-50 text-rose-700 border border-rose-200'
 }
 
-function sourceLabel(row: ContribRow): string {
-  if (row.source !== 'transaction') return 'Manual'
+function sourceLabel(row: ContribRow, labels: Record<string, FlowKind>): string {
+  const kind = labels[row.id]
+  if (kind) return FLOW_KIND_LABEL[kind]
+  if (row.source !== 'transaction') return 'Unclassified external money'
   return row.direction === 'from_portfolio' ? 'Withdrawal' : 'Contribution'
 }
 
@@ -64,49 +70,65 @@ export default async function ContributionsPage({
   // Whole ledger (paginated past the 1000-row API limit) so years can be
   // derived from the data and a capital flow can supersede a legacy
   // transaction regardless of year.
-  const [ledgerRes, txRes] = await Promise.all([
-    fetchAllRows<CapitalFlowEntry>((from, to) =>
+  const [ledgerRes, invRes, rawTxRes] = await Promise.all([
+    fetchAllRows<CapitalFlowWithKind>((from, to) =>
       supabase
         .from('capital_flow_entries')
         .select('*')
         .order('id', { ascending: true })
         .range(from, to)
-        .returns<CapitalFlowEntry[]>()
+        .returns<CapitalFlowWithKind[]>()
     ),
-    fetchAllRows<ContribTx>((from, to) =>
-      supabase
-        .from('transactions')
-        .select('*, investment:investments(platform)')
-        // Legacy compatibility: only rows still flagged as a contribution.
-        .eq('is_contribution', true)
-        .order('id', { ascending: true })
-        .range(from, to)
-        .returns<ContribTx[]>()
-    ),
+    fetchAllInvestments(supabase),
+    fetchAllTransactions(supabase),
   ])
 
-  const external = buildExternalCashFlowRows(ledgerRes.data ?? [], txRes.data ?? [])
+  const investments = invRes.data ?? []
+  const platformByInvestment = new Map(investments.map((i) => [i.id, i.platform]))
+  const transactions: ContribTx[] = (rawTxRes.data ?? []).map((tx) => ({
+    ...tx,
+    investment: { platform: platformByInvestment.get(tx.investment_id) ?? 'Unknown' },
+  }))
+  const ledgerRows = ledgerRes.data ?? []
+  const external = buildExternalCashFlowRows(ledgerRows, transactions)
 
   // Legacy rows with an unknown EUR amount (missing FX) stay IN the list with
   // amount NaN: every total they belong to then shows '—' (fail-closed) and
   // the notice below explains why — never a silently lower total.
   const allRows = [...external.rows, ...external.fxMissingRows]
-  // Per-year totals over ALL years (plain sums: an unknown row → '—').
-  const perYear = Array.from(
-    allRows.reduce((m, r) => {
-      const y = m.get(r.year) ?? { inEur: 0, outEur: 0 }
-      if (r.direction === 'to_portfolio') y.inEur += Number(r.amount_eur)
-      else y.outEur += Number(r.amount_eur)
-      return m.set(r.year, y)
-    }, new Map<number, { inEur: number; outEur: number }>())
-  ).sort((a, b) => a[0] - b[0])
+  const flowKind = (row: CapitalFlowWithKind): FlowKind | undefined => {
+    if (row.direction === 'from_portfolio') return 'withdrawal'
+    if (row.flow_kind === 'round_up' || row.flow_kind === 'saveback' || row.flow_kind === 'external_reward' || row.flow_kind === 'reused_sale_proceeds') {
+      return row.flow_kind
+    }
+    if (row.flow_kind === 'bank_deposit' || row.flow_kind === 'savings_plan' || row.flow_kind === 'order_payment') return 'bank_deposit'
+    return undefined
+  }
+  const labels: Record<string, FlowKind> = Object.fromEntries(ledgerRows.flatMap((row) => {
+    const kind = flowKind(row)
+    return row.id && kind ? [[row.id, kind] as const] : []
+  }))
+  const returnFlows = classifyReturnFlows({
+    externalRows: allRows,
+    transactions,
+    investments,
+    labels,
+  })
+  const displayKinds: Record<string, FlowKind> = Object.fromEntries(
+    returnFlows.filter((flow) => flow.origin === 'capital_flow').map((flow) => [flow.id, flow.kind])
+  )
   const availableYears = deriveAvailableYears(allRows.map((r) => r.flow_date))
+  const perYear = availableYears.map((y) => [
+    y,
+    summarizeContributions(returnFlows, `${y}-01-01`, `${y}-12-31`),
+  ] as const)
   const requestedYear = Number(yearParam)
   const year = availableYears.includes(requestedYear)
     ? requestedYear
     : availableYears[availableYears.length - 1]
 
   const yearRows = allRows.filter((r) => r.year === year)
+  const yearSummary = summarizeContributions(returnFlows, `${year}-01-01`, `${year}-12-31`)
   const fxMissingInYear = external.fxMissingRows.filter((r) => r.year === year).length
   const legacyCountInYear = yearRows.filter((r) => r.source === 'transaction').length
 
@@ -115,14 +137,11 @@ export default async function ContributionsPage({
     return a.created_at > b.created_at ? -1 : 1
   })
 
-  const inflows     = entries.filter((e) => e.direction === 'to_portfolio')
   const outflows    = entries.filter((e) => e.direction === 'from_portfolio')
 
-  const grossIn     = sumEur(inflows)
-  const totalOut    = sumEur(outflows)
-  const netContrib  = grossIn - totalOut
-  const entryCount  = entries.length
-
+  const grossIn     = yearSummary.grossInflowsEur
+  const totalOut    = yearSummary.grossWithdrawalsEur
+  const netContrib  = yearSummary.netExternalCashFlowEur
   // ── Platform breakdown ──────────────────────────────────────────────────
 
   const platformMap = new Map<string, { toP: number; fromP: number }>()
@@ -190,18 +209,22 @@ export default async function ContributionsPage({
             <thead>
               <tr className="bg-slate-50 border-b border-slate-100 text-xs text-slate-500">
                 <th className="text-left px-5 py-2 font-medium">Year</th>
-                <th className="text-right px-4 py-2 font-medium">Gross deposits</th>
+                <th className="text-right px-4 py-2 font-medium">Own money added</th>
+                <th className="text-right px-4 py-2 font-medium">Platform-funded</th>
+                <th className="text-right px-4 py-2 font-medium">Re-used proceeds</th>
                 <th className="text-right px-4 py-2 font-medium">Gross withdrawals</th>
-                <th className="text-right px-5 py-2 font-medium">Net contributed</th>
+                <th className="text-right px-5 py-2 font-medium">Net external cash flow</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {perYear.map(([y, v]) => (
                 <tr key={y}>
                   <td className="px-5 py-2 text-slate-900">{y}</td>
-                  <td className="px-4 py-2 text-right tabular-nums"><PrivacyGate fallback="—"><>{money(v.inEur, 'EUR')}</></PrivacyGate></td>
-                  <td className="px-4 py-2 text-right tabular-nums"><PrivacyGate fallback="—"><>{money(v.outEur, 'EUR')}</></PrivacyGate></td>
-                  <td className="px-5 py-2 text-right tabular-nums font-medium"><PrivacyGate fallback="—"><>{money(v.inEur - v.outEur, 'EUR')}</></PrivacyGate></td>
+                  <td className="px-4 py-2 text-right tabular-nums"><PrivacyGate fallback="—"><>{money(v.grossOwnContributionsEur, 'EUR')}</></PrivacyGate></td>
+                  <td className="px-4 py-2 text-right tabular-nums"><PrivacyGate fallback="—"><>{money(v.grossPlatformContributionsEur, 'EUR')}</></PrivacyGate></td>
+                  <td className="px-4 py-2 text-right tabular-nums"><PrivacyGate fallback="—"><>{money(v.reusedSaleProceedsEur, 'EUR')}</></PrivacyGate></td>
+                  <td className="px-4 py-2 text-right tabular-nums"><PrivacyGate fallback="—"><>{money(v.grossWithdrawalsEur, 'EUR')}</></PrivacyGate></td>
+                  <td className="px-5 py-2 text-right tabular-nums font-medium"><PrivacyGate fallback="—"><>{money(v.netExternalCashFlowEur, 'EUR')}</></PrivacyGate></td>
                 </tr>
               ))}
             </tbody>
@@ -238,29 +261,35 @@ export default async function ContributionsPage({
       )}
 
       {/* ── Summary cards ── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard
-          label="Gross cash in"
-          value={<PrivacyGate fallback="—"><>{money(grossIn, 'EUR')}</></PrivacyGate>}
-          hint={`${inflows.length} inflow${inflows.length !== 1 ? 's' : ''}`}
+          label="Own money added"
+          value={<PrivacyGate fallback="—"><>{money(yearSummary.grossOwnContributionsEur, 'EUR')}</></PrivacyGate>}
+          hint={`Bank money + Round Ups in ${year}`}
           tone="positive"
         />
         <StatCard
-          label="Cash out"
-          value={<PrivacyGate fallback="—"><>{totalOut > 0 ? money(totalOut, 'EUR') : '—'}</></PrivacyGate>}
+          label="Platform-funded"
+          value={<PrivacyGate fallback="—"><>{money(yearSummary.grossPlatformContributionsEur, 'EUR')}</></PrivacyGate>}
+          hint="Saveback, cashback and rewards"
+          tone="positive"
+        />
+        <StatCard
+          label="Re-used sale proceeds"
+          value={<PrivacyGate fallback="—"><>{money(yearSummary.reusedSaleProceedsEur, 'EUR')}</></PrivacyGate>}
+          hint="Visible, but never new contributions"
+        />
+        <StatCard
+          label="Gross withdrawals"
+          value={<PrivacyGate fallback="—"><>{money(totalOut, 'EUR')}</></PrivacyGate>}
           hint={`${outflows.length} outflow${outflows.length !== 1 ? 's' : ''}`}
           tone={totalOut > 0 ? 'negative' : 'neutral'}
         />
         <StatCard
-          label="Net contributed"
+          label="Net external cash flow"
           value={<PrivacyGate fallback="—"><>{money(netContrib, 'EUR')}</></PrivacyGate>}
-          hint="Gross in minus cash out"
+          hint="All money in minus all money out — not personal contributions"
           tone={netContrib > 0 ? 'positive' : netContrib < 0 ? 'negative' : 'neutral'}
-        />
-        <StatCard
-          label="Entries"
-          value={String(entryCount)}
-          hint={`for ${year}`}
         />
       </div>
 
@@ -389,7 +418,7 @@ export default async function ContributionsPage({
                     <th className={`text-left  px-4       ${thClass}`}>Platform</th>
                     <th className={`text-left  px-4       ${thClass} hidden sm:table-cell`}>Direction</th>
                     <th className={`text-right px-4       ${thClass}`}>Amount</th>
-                    <th className={`text-left  px-4       ${thClass} hidden sm:table-cell`}>Source</th>
+                    <th className={`text-left  px-4       ${thClass} hidden sm:table-cell`}>Money type</th>
                     <th className={`text-left  px-5 md:px-6 ${thClass} hidden md:table-cell`}>Notes</th>
                   </tr>
                 </thead>
@@ -418,7 +447,7 @@ export default async function ContributionsPage({
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap hidden sm:table-cell">
                           <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${sourceBadgeClass(e)}`}>
-                            {sourceLabel(e)}
+                            {sourceLabel(e, displayKinds)}
                           </span>
                         </td>
                         <td className="px-5 md:px-6 py-3 text-slate-400 text-xs hidden md:table-cell max-w-[200px] truncate">
@@ -437,9 +466,9 @@ export default async function ContributionsPage({
       {/* ── Definition ── */}
       <p className="text-xs text-slate-400 leading-relaxed px-1">
         <span className="font-medium text-slate-500">Definition: </span>
-        Net contribution = money sent from bank / income to portfolio platforms
-        minus money received back. Reinvestments, sells, dividends, and reallocations
-        between platforms are not tracked here.
+        Your contribution is new money from your bank plus Round Ups. Platform-funded money is shown separately.
+        Selling and buying again inside the portfolio is never a contribution. If sale proceeds leave the portfolio
+        and later return, record them as re-used sale proceeds: visible, but not new money.
       </p>
 
     </div>

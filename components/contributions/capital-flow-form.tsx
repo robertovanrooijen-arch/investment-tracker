@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { Field } from '@/components/ui/field'
 import { Button } from '@/components/ui/button'
-import type { CapitalFlowDirection } from '@/types/database'
+import type { CapitalFlowDirection, CapitalFlowKind } from '@/types/database'
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10)
@@ -23,6 +23,7 @@ export function CapitalFlowForm({
   const supabase = createClient()
 
   const [direction, setDirection] = useState<CapitalFlowDirection>('to_portfolio')
+  const [flowKind,  setFlowKind]  = useState<CapitalFlowKind>('bank_deposit')
   const [date,      setDate]      = useState(todayISO())
   const [platform,  setPlatform]  = useState('')
   const [amount,    setAmount]    = useState('')
@@ -63,6 +64,7 @@ export function CapitalFlowForm({
           platform:   platform.trim(),
           direction,
           amount_eur: amountNum,
+          flow_kind:  direction === 'from_portfolio' ? 'bank_withdrawal' : flowKind,
           notes:      notes.trim() || null,
         })
 
@@ -96,7 +98,11 @@ export function CapitalFlowForm({
             <button
               key={value}
               type="button"
-              onClick={() => setDirection(value)}
+              onClick={() => {
+                setDirection(value)
+                if (value === 'from_portfolio') setFlowKind('bank_withdrawal')
+                else if (flowKind === 'bank_withdrawal') setFlowKind('bank_deposit')
+              }}
               className={`px-5 py-1.5 rounded-md text-sm font-medium transition-colors ${
                 direction === value
                   ? 'bg-white text-slate-900 shadow-sm'
@@ -158,6 +164,31 @@ export function CapitalFlowForm({
             placeholder="0.00"
           />
         </Field>
+
+        {direction === 'to_portfolio' && (
+          <Field label="What kind of money is this?" htmlFor="flow-kind" required>
+            <select
+              id="flow-kind"
+              className={inputClass}
+              value={flowKind}
+              onChange={(e) => setFlowKind(e.target.value as CapitalFlowKind)}
+            >
+              <option value="bank_deposit">New money from my bank</option>
+              <option value="round_up">Round Up (my money)</option>
+              <option value="saveback">Saveback / cashback (platform money)</option>
+              <option value="external_reward">Referral or other platform reward</option>
+              <option value="reused_sale_proceeds">Re-used proceeds from an earlier sale</option>
+            </select>
+            <p className="mt-1.5 text-xs text-slate-400">
+              Re-used sale proceeds remain visible but never count as new contributions.
+            </p>
+          </Field>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+        Selling an investment and buying another one inside a broker needs no capital-flow entry: it is automatically
+        treated as reinvestment. Record a flow only when money actually enters or leaves the tracked portfolio.
       </div>
 
       <Field label="Notes" htmlFor="notes">
