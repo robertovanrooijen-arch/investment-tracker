@@ -47,6 +47,10 @@ export type SleeveDay = {
   sleeve: string
   valueEur: number | null // value at the close of the day; null = unknown
   netInflowEur: number // money moved INTO the sleeve during the day (− = out)
+  // Change of the value caused by a change of VALUATION BASIS (e.g. statement
+  // → market, a new dealer value) during the day. Not money, not a gain:
+  // excluded from the return, the contributions and the components.
+  basisAdjustmentEur?: number
   components?: Partial<Record<Exclude<GainComponent, 'market'>, number>>
   quality: ValueQuality
   missingReason?: string
@@ -76,6 +80,7 @@ export type SleeveResult = {
   ownReturn: number | null
   startValueEur: number
   endValueEur: number
+  basisAdjustmentEur: number
 }
 
 export type TwrResult = {
@@ -90,6 +95,9 @@ export type TwrResult = {
   endValueEur: number | null
   externalInEur: number
   externalOutEur: number
+  // Σ valuation basis adjustments in the period (see SleeveDay); the identity
+  // is end = start + external flows + gain + basis adjustments.
+  valuationBasisAdjustmentEur: number
   gainEur: number | null
   subPeriods: { from: string; to: string; return: number }[]
   bySleeve: Record<string, SleeveResult>
@@ -98,7 +106,7 @@ export type TwrResult = {
   residual: number | null
   reconciled: boolean
   missing: { date: string; sleeve: string; reason: string }[]
-  daily: { date: string; valueEur: number; externalFlowEur: number; return: number }[]
+  daily: { date: string; valueEur: number; externalFlowEur: number; basisAdjustmentEur: number; return: number }[]
 }
 
 // Σ contributions must match the TWR within this tolerance (0.01 percentage
@@ -125,7 +133,7 @@ export function computeTwr(input: TwrInput, options: { allowTruncation?: boolean
   const unavailable = (endDate: string): TwrResult => ({
     status: 'unavailable', quality: 'unavailable', startDate: input.startDate, endDate, requestedEndDate,
     truncated: false, twr: null, startValueEur: null, endValueEur: null, externalInEur: 0, externalOutEur: 0,
-    gainEur: null, subPeriods: [], bySleeve: {}, byComponent: emptyComponents(), sumOfContributions: null,
+    valuationBasisAdjustmentEur: 0, gainEur: null, subPeriods: [], bySleeve: {}, byComponent: emptyComponents(), sumOfContributions: null,
     residual: null, reconciled: false, missing, daily: [],
   })
 
@@ -141,7 +149,7 @@ export function computeTwr(input: TwrInput, options: { allowTruncation?: boolean
   input.days.forEach((day, idx) => {
     const bad: TwrResult['missing'] = []
     for (const s of day.sleeves) {
-      if (s.valueEur === null || !Number.isFinite(s.valueEur) || !Number.isFinite(s.netInflowEur)) {
+      if (s.valueEur === null || !Number.isFinite(s.valueEur) || !Number.isFinite(s.netInflowEur) || !Number.isFinite(s.basisAdjustmentEur ?? 0)) {
         bad.push({ date: day.date, sleeve: s.sleeve, reason: s.missingReason ?? 'Value unknown.' })
       }
     }
@@ -173,7 +181,8 @@ export function computeTwr(input: TwrInput, options: { allowTruncation?: boolean
 
   const sleeves: Record<string, SleeveResult & { growth: number; held: boolean }> = {}
   const sleeveOf = (id: string) =>
-    (sleeves[id] ??= { contribution: 0, gainEur: 0, ownReturn: null, startValueEur: prev.get(id) ?? 0, endValueEur: 0, growth: 1, held: false })
+    (sleeves[id] ??= { contribution: 0, gainEur: 0, ownReturn: null, startValueEur: prev.get(id) ?? 0, endValueEur: 0, basisAdjustmentEur: 0, growth: 1, held: false })
+  let basisTotalEur = 0
   for (const id of prev.keys()) sleeveOf(id)
 
   const byComponent = emptyComponents()
@@ -203,11 +212,15 @@ export function computeTwr(input: TwrInput, options: { allowTruncation?: boolean
     }
     const capital = prevTotal + flow
     let total = 0
+    let dayBasis = 0
     const gains: { id: string; gain: number; comps: Record<GainComponent, number> }[] = []
     for (const s of day.sleeves) {
       const before = prev.get(s.sleeve) ?? 0
       const value = s.valueEur as number
-      const gain = value - before - s.netInflowEur
+      const basis = s.basisAdjustmentEur ?? 0
+      const gain = value - before - s.netInflowEur - basis
+      dayBasis += basis
+      if (basis !== 0) sleeveOf(s.sleeve).basisAdjustmentEur += basis
       const comps = emptyComponents()
       let explained = 0
       for (const [k, v] of Object.entries(s.components ?? {}) as [Exclude<GainComponent, 'market'>, number][]) {
@@ -231,7 +244,8 @@ export function computeTwr(input: TwrInput, options: { allowTruncation?: boolean
     // Sleeves not reported today keep their value (no gain).
     for (const [id, v] of prev) if (!day.sleeves.some((s) => s.sleeve === id)) total += v
 
-    const gainTotal = total - prevTotal - flow
+    const gainTotal = total - prevTotal - flow - dayBasis
+    basisTotalEur += dayBasis
     let r: number
     if (capital > ZERO_CAPITAL_EUR) r = gainTotal / capital
     else if (Math.abs(gainTotal) <= BALANCE_TOLERANCE_EUR) r = 0
@@ -253,7 +267,7 @@ export function computeTwr(input: TwrInput, options: { allowTruncation?: boolean
     growth *= 1 + r
     periodGrowth *= 1 + r
     prevTotal = total
-    daily.push({ date: day.date, valueEur: total, externalFlowEur: flow, return: r })
+    daily.push({ date: day.date, valueEur: total, externalFlowEur: flow, basisAdjustmentEur: dayBasis, return: r })
   }
   const endDate = daily.length ? daily[daily.length - 1].date : input.startDate
   if (daily.length) subPeriods.push({ from: periodStart, to: endDate, return: periodGrowth - 1 })
@@ -268,6 +282,7 @@ export function computeTwr(input: TwrInput, options: { allowTruncation?: boolean
       ownReturn: s.held ? s.growth - 1 : null,
       startValueEur: s.startValueEur,
       endValueEur: prev.get(id) ?? 0,
+      basisAdjustmentEur: s.basisAdjustmentEur,
     }
     sum += s.contribution
   }
@@ -284,7 +299,8 @@ export function computeTwr(input: TwrInput, options: { allowTruncation?: boolean
     endValueEur: prevTotal,
     externalInEur,
     externalOutEur,
-    gainEur: prevTotal - startValueEur - (externalInEur - externalOutEur),
+    valuationBasisAdjustmentEur: basisTotalEur,
+    gainEur: prevTotal - startValueEur - (externalInEur - externalOutEur) - basisTotalEur,
     subPeriods,
     bySleeve,
     byComponent,

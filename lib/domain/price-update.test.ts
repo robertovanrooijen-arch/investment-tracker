@@ -2,7 +2,7 @@ import { test, describe, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { normalizeQuoteCurrency, priceForStorage, priceStatusFor } from '@/lib/domain/price-update'
 import { refreshPortfolioForUser, snapshotQualityColumnsEnabled } from '@/lib/domain/refresh'
-import { upsertTodaysSnapshot } from '@/lib/domain/snapshot'
+import { writeCentralSnapshots } from '@/lib/domain/central-snapshot'
 import {
   getAvailableYears,
   isEstimatedCapitalFlowSource,
@@ -185,13 +185,15 @@ describe('refreshPortfolioForUser — prices and snapshots', () => {
     assert.equal(process.env.SNAPSHOT_QUALITY_COLUMNS, undefined)
     assert.equal(snapshotQualityColumnsEnabled(), false)
     mockYahoo({})
+    // The central valuation needs a current price (≤ 36 h) and funded purchases.
     const { client, ops } = fakeSupabase({
-      investments: [inv({ id: 'eur' })],
+      investments: [inv({ id: 'eur', price_last_updated_at: new Date().toISOString() })],
       transactions: [buyTx('eur')],
+      capital_flow_entries: [{ id: 'c1', user_id: 'u1', flow_date: '2026-01-02', year: 2026, platform: 'DEGIRO', direction: 'to_portfolio', amount_eur: 100, source: 'manual', notes: null, created_at: '' }],
       fx_rates: [{ currency: 'EUR', eur_per_unit: 1, fetched_at: '2026-10-27T00:00:00Z' }],
     })
     const summary = await refreshPortfolioForUser(client, 'u1', 'cron')
-    assert.equal(summary.quality, 'complete')
+    assert.equal(summary.quality, 'complete', JSON.stringify(summary.valuationGaps))
     const inv1 = ops.find((o) => o.table === 'investment_snapshots' && o.kind === 'upsert')
     const port = ops.find((o) => o.table === 'portfolio_snapshots' && o.kind === 'upsert')
     assert.ok(inv1 && port)
@@ -202,15 +204,19 @@ describe('refreshPortfolioForUser — prices and snapshots', () => {
     }
   })
 
-  test('upsertTodaysSnapshot itself refuses incomplete metrics (defence in depth)', async () => {
+  test('the central snapshot writer itself refuses an incomplete valuation (defence in depth)', async () => {
     const { client, ops } = fakeSupabase({})
-    const metrics = {
-      totalValue: 100, totalInvested: NaN, totalRealized: 0, totalUnrealized: NaN, totalProfit: NaN,
-      totalEverInvested: NaN, resultVsPurchaseVolumePct: null, fxIncompleteCount: 1, fxLiveFallbackCount: 0, complete: false,
+    const valuation = {
+      asOf: '2026-10-31', status: 'unavailable' as const, totalEur: null, positionsEur: null, cashEur: null, ledgerTotalEur: null,
+      costOfOpenPositionsEur: 0, positions: [], cash: [], quality: null, oldestPriceAsOf: null,
+      brokerCash: { presentation: 'separate' as const, roundingToleranceEur: 0.1, totalEur: null, byPlatform: [], policyDecisionNeeded: false },
+      gaps: [{ source: 'fx_rate' as const, item: 'CHF', requestedFrom: null, requestedTo: '2026-10-31', lastAvailableDate: null, reason: 'No current CHF→EUR rate.' }],
     }
-    const res = await upsertTodaysSnapshot(client, 'u1', metrics, 'cron')
+    const res = await writeCentralSnapshots(client, { investments: [], transactions: [], fxRates: { EUR: 1 }, valuation }, {
+      userId: 'u1', source: 'cron', today: '2026-10-31', now: '2026-10-31T10:00:00Z', writeQuality: false,
+    })
     assert.equal(res.snapshot, null)
-    assert.ok(res.error)
+    assert.ok(res.snapshotError)
     assert.equal(ops.length, 0)
   })
 

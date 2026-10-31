@@ -1,14 +1,14 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
-import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { PageHeader } from '@/components/ui/page-header'
-import { DataQualityNotice } from '@/components/ui/data-quality-notice'
 import { StatCard } from '@/components/ui/stat-card'
+import { BrokerCashNote } from '@/components/ui/broker-cash-note'
 import { AllocationPageClient } from '@/components/allocation/allocation-page-client'
 import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import { pct } from '@/lib/domain/calculations'
-import { buildPortfolioAllocation, categorySlug } from '@/lib/domain/allocation'
-import { loadFxRates } from '@/lib/domain/fx'
+import { buildAllocationFromValuation, categorySlug } from '@/lib/domain/allocation'
+import { loadPortfolioState } from '@/lib/returns/load-returns'
+import { todayLocalIso } from '@/lib/domain/snapshot'
 
 export default async function AssetAllocationPage({
   searchParams,
@@ -18,17 +18,9 @@ export default async function AssetAllocationPage({
   const { category } = await searchParams
   const supabase = await createClient()
 
-  const [invRes, txRes, fxRes] = await Promise.all([
-    fetchAllInvestments(supabase),
-    fetchAllTransactions(supabase),
-    loadFxRates(supabase),
-  ])
-
-  const investments = invRes.data ?? []
-  const transactions = txRes.data ?? []
-  const fxRates = fxRes.rates
-
-  const allocation = buildPortfolioAllocation(investments, transactions, fxRates)
+  // The central current valuation: exactly the values of Dashboard and Returns.
+  const { investments, valuation } = await loadPortfolioState(supabase, todayLocalIso())
+  const allocation = buildAllocationFromValuation(investments, valuation)
 
   const largestHolding = allocation.holdings[0] ?? null
   const largestCategory = allocation.categories[0] ?? null
@@ -38,7 +30,7 @@ export default async function AssetAllocationPage({
       : null
 
   // An allocation withheld because of missing FX is not "empty" — the notice explains it.
-  const isEmpty = allocation.holdings.length === 0 && allocation.fxIncompleteCount === 0
+  const isEmpty = allocation.holdings.length === 0 && valuation.status === 'ok'
 
   return (
     <div className="space-y-6">
@@ -53,9 +45,13 @@ export default async function AssetAllocationPage({
         subtitle="Explore how your portfolio is distributed across asset classes and individual holdings."
       />
 
-      <DataQualityNotice fxIncompleteCount={allocation.fxIncompleteCount} />
+      {valuation.status !== 'ok' && (
+        <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+          — The allocation is not shown: {valuation.gaps[0]?.reason ?? 'the current value is incomplete'}
+        </p>
+      )}
 
-      {isEmpty ? (
+      {valuation.status !== 'ok' ? null : isEmpty ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center">
           <p className="text-slate-900 font-medium">Nothing to show yet</p>
           <p className="text-sm text-slate-500 mt-1">
@@ -73,7 +69,8 @@ export default async function AssetAllocationPage({
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <StatCard
               label="Total portfolio value"
-              value={<PrivacyMoney value={allocation.totalValue} fallbackText="—" />}
+              value={<PrivacyMoney value={valuation.totalEur} fallbackText="—" />}
+              hint={<>Same as Dashboard · <BrokerCashNote cash={valuation.brokerCash} /></>}
             />
             <StatCard label="Holdings" value={String(allocation.holdings.length)} />
             <StatCard

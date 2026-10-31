@@ -12,7 +12,7 @@ import {
 } from 'recharts'
 import { money } from '@/lib/format'
 import { pct } from '@/lib/domain/calculations'
-import type { AllocationSlice, PortfolioMetrics } from '@/lib/domain/calculations'
+import type { AllocationSlice } from '@/lib/domain/calculations'
 import { CATEGORY_HEX, PLATFORM_HEX, FALLBACK_HEX } from '@/lib/colors'
 import { categorySlug, categoryLabel } from '@/lib/domain/allocation'
 import { ViewDetailsLink } from '@/components/ui/view-details-link'
@@ -186,90 +186,64 @@ function barColor(n: number): string {
   return '#94a3b8'             // slate-400
 }
 
-function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
-  const { totalRealized, totalUnrealized, totalProfit } = metrics
-  const hasAnyPL = totalRealized !== 0 || totalUnrealized !== 0
-  // Avoid divide-by-zero; if both are 0 show zero bars
-  const absTotal = Math.abs(totalRealized) + Math.abs(totalUnrealized) || 1
+export type CentralResultSummary = {
+  realisedEur: number | null
+  unrealisedEur: number | null
+  totalEur: number | null
+  unavailableReason: string | null
+}
 
-  function barWidth(n: number): string {
-    return `${Math.min((Math.abs(n) / absTotal) * 100, 100)}%`
+function ProfitLossBreakdown({ result }: { result: CentralResultSummary }) {
+  if (result.totalEur === null || result.realisedEur === null || result.unrealisedEur === null) {
+    return (
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-base font-semibold text-slate-900">Investment result</h2>
+          <ViewDetailsLink href="/portfolio/profit-loss" />
+        </div>
+        <p className="text-sm text-slate-500">— Not available: {result.unavailableReason ?? 'data incomplete'}.</p>
+      </div>
+    )
   }
-
-  // Privacy mode drops the € split but keeps something genuinely useful:
-  // each component's share of combined |realized| + |unrealized| — the
-  // exact same ratio the bar width below already uses, so the number next
-  // to a bar always matches how full that bar looks. This is a SHARE of
-  // total P/L, not a return — labelled as such, never conflated with
-  // resultVsPurchaseVolumePct (result vs purchase volume, a different
-  // question answered by the "Total" row below).
-  function shareOfTotalPLPct(n: number): number | null {
-    return hasAnyPL ? (Math.abs(n) / absTotal) * 100 : null
-  }
-
+  const totalRealized = result.realisedEur
+  const totalUnrealized = result.unrealisedEur
+  const totalProfit = result.totalEur
+  // Dividends and interest − separate costs − taxes: what is neither realised
+  // nor unrealised, so the three lines add up to the total exactly.
+  const otherEur = totalProfit - totalRealized - totalUnrealized
+  const absTotal = Math.abs(totalRealized) + Math.abs(totalUnrealized) + Math.abs(otherEur) || 1
+  const barWidth = (n: number) => `${Math.min((Math.abs(n) / absTotal) * 100, 100)}%`
   const profitTone = totalProfit > 0 ? 'text-emerald-700' : totalProfit < 0 ? 'text-rose-700' : 'text-slate-900'
-  // No percentage on the total: profit / cumulative purchases is not a return
-  // (re-bought money is counted again). The return figure is the Dashboard XIRR.
+  const rows = [
+    { label: 'Unrealized (open positions)', value: totalUnrealized },
+    { label: 'Realized (sold units)', value: totalRealized },
+    { label: 'Dividends and interest − costs and taxes', value: otherEur },
+  ]
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-base font-semibold text-slate-900">Profit / loss breakdown</h2>
+        <h2 className="text-base font-semibold text-slate-900">Investment result since start</h2>
         <ViewDetailsLink href="/portfolio/profit-loss" />
       </div>
 
       <div className="space-y-4">
-        {/* Unrealized */}
-        <div>
-          <div className="flex items-center justify-between text-sm mb-1.5">
-            <span className="text-slate-600">Unrealized</span>
-            <span className={`font-medium tabular-nums ${tone(totalUnrealized)}`}>
-              <PrivacyMoney
-                value={totalUnrealized}
-                signed
-                fallbackText={
-                  shareOfTotalPLPct(totalUnrealized) !== null
-                    ? `${shareOfTotalPLPct(totalUnrealized)!.toFixed(1)}% of total P/L`
-                    : '—'
-                }
-              />
-            </span>
+        {rows.map((r) => (
+          <div key={r.label}>
+            <div className="flex items-center justify-between text-sm mb-1.5">
+              <span className="text-slate-600">{r.label}</span>
+              <span className={`font-medium tabular-nums ${tone(r.value)}`}>
+                <PrivacyMoney value={r.value} signed fallbackText={`${((Math.abs(r.value) / absTotal) * 100).toFixed(1)}% of the parts`} />
+              </span>
+            </div>
+            <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
+              <div className="h-full rounded-full transition-all" style={{ width: barWidth(r.value), backgroundColor: barColor(r.value) }} />
+            </div>
           </div>
-          <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{ width: barWidth(totalUnrealized), backgroundColor: barColor(totalUnrealized) }}
-            />
-          </div>
-        </div>
+        ))}
 
-        {/* Realized */}
-        <div>
-          <div className="flex items-center justify-between text-sm mb-1.5">
-            <span className="text-slate-600">Realized</span>
-            <span className={`font-medium tabular-nums ${tone(totalRealized)}`}>
-              <PrivacyMoney
-                value={totalRealized}
-                signed
-                fallbackText={
-                  shareOfTotalPLPct(totalRealized) !== null
-                    ? `${shareOfTotalPLPct(totalRealized)!.toFixed(1)}% of total P/L`
-                    : '—'
-                }
-              />
-            </span>
-          </div>
-          <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{ width: barWidth(totalRealized), backgroundColor: barColor(totalRealized) }}
-            />
-          </div>
-        </div>
-
-        {/* Total */}
         <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
-          <span className="text-sm font-medium text-slate-900">Total profit / loss</span>
+          <span className="text-sm font-medium text-slate-900">Total investment result</span>
           <div className="text-right">
             <PrivacyGate fallback="—">
               <span className={`text-base font-semibold tabular-nums ${profitTone}`}>
@@ -288,10 +262,10 @@ function ProfitLossBreakdown({ metrics }: { metrics: PortfolioMetrics }) {
 type Props = {
   byCategory: AllocationSlice[]
   byPlatform: AllocationSlice[]
-  liveMetrics: PortfolioMetrics
+  result: CentralResultSummary
 }
 
-export function PortfolioBreakdownCharts({ byCategory, byPlatform, liveMetrics }: Props) {
+export function PortfolioBreakdownCharts({ byCategory, byPlatform, result }: Props) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -305,7 +279,7 @@ export function PortfolioBreakdownCharts({ byCategory, byPlatform, liveMetrics }
         />
         <AllocationDonut title="By platform" slices={byPlatform} colorMap={PLATFORM_HEX} />
       </div>
-      <ProfitLossBreakdown metrics={liveMetrics} />
+      <ProfitLossBreakdown result={result} />
     </div>
   )
 }

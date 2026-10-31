@@ -2,19 +2,11 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchYahooPrice } from '@/lib/domain/yahoo-price'
 import { hasUnits } from '@/lib/domain/constants'
 import { priceForStorage, priceStatusFor, type PriceStatus } from '@/lib/domain/price-update'
-import {
-  computeInvestmentMetrics,
-  computePortfolioMetrics,
-} from '@/lib/domain/calculations'
-import { loadFxRates } from '@/lib/domain/fx'
-import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
-import {
-  upsertTodaysSnapshot,
-  upsertTodaysInvestmentSnapshots,
-  type InvestmentSnapshotInput,
-  type SnapshotSource,
-  type UpsertedSnapshot,
-} from '@/lib/domain/snapshot'
+import { fetchAllInvestments } from '@/lib/supabase/fetch-user-data'
+import { todayLocalIso, type SnapshotSource } from '@/lib/domain/snapshot'
+import { loadPortfolioState } from '@/lib/returns/load-returns'
+import { writeCentralSnapshots, type SnapshotRow } from '@/lib/domain/central-snapshot'
+import type { CurrentValueQuality, DataGap } from '@/lib/domain/current-valuation'
 import type { Investment } from '@/types/database'
 
 export type PriceResult = {
@@ -36,19 +28,24 @@ export type RefreshSummary = {
     failed: number
     results: PriceResult[]
   }
-  snapshot: UpsertedSnapshot | null
+  snapshot: SnapshotRow | null
   snapshotError: string | null
   investmentSnapshots: { upserted: number; error: string | null }
   // Price quality of every position at snapshot time. Persisted only once the
   // pending snapshot-quality columns exist (SNAPSHOT_QUALITY_COLUMNS=enabled);
   // always returned here so a cron/manual run never hides stale prices.
   priceStatusCounts: Record<PriceStatus, number>
-  // Positions whose EUR figures are unknown (missing FX).
+  // Open positions without a validated current value.
   skippedIncompleteSnapshots: number
-  // 'complete'     → snapshots written.
-  // 'fx_incomplete'→ NO snapshot written at all (portfolio or per-position):
-  //                  a partial historical snapshot is never stored.
-  quality: 'complete' | 'fx_incomplete'
+  // 'complete'      → snapshots written (from the central valuation).
+  // 'fx_incomplete' → NO snapshot at all: an FX rate is missing.
+  // 'incomplete'    → NO snapshot at all: a price or other value is missing.
+  // A partial historical snapshot is never stored.
+  quality: 'complete' | 'fx_incomplete' | 'incomplete'
+  // Quality of the stored value (e.g. 'estimated' with a metal benchmark) and
+  // every reason why nothing was written.
+  valuationQuality: CurrentValueQuality | null
+  valuationGaps: DataGap[]
   fetchedAt: string
 }
 
@@ -168,127 +165,34 @@ export async function refreshPortfolioForUser(
     results: priceResults,
   }
 
-  // 3. Re-fetch fresh data, load fresh FX, compute metrics in EUR.
-  const [freshInvRes, freshTxRes, freshFx] = await Promise.all([
-    fetchAllInvestments(supabase, '*', { userId }),
-    fetchAllTransactions(supabase, '*', { userId }),
-    loadFxRates(supabase),
-  ])
-
-  // A failed read must never become an empty portfolio (and a €0 snapshot).
-  if (freshInvRes.error) {
-    throw new Error(`Failed to load investments: ${freshInvRes.error.message}`)
-  }
-  if (freshTxRes.error) {
-    throw new Error(`Failed to load transactions: ${freshTxRes.error.message}`)
-  }
-
-  const freshInvestments = freshInvRes.data ?? []
-  const freshTransactions = freshTxRes.data ?? []
-  const fxRates = freshFx.rates
-
-  // 4. Per-position metrics and price quality (computed once, used by both
-  //    the portfolio snapshot and the per-investment snapshots).
-  const refreshedIds = new Set(
-    priceResults.filter((r) => r.status === 'success').map((r) => r.id)
-  )
-  const priceStatusCounts: Record<PriceStatus, number> = {
-    fresh: 0,
-    stale: 0,
-    missing: 0,
-    not_applicable: 0,
-  }
-  const writeQuality = snapshotQualityColumnsEnabled()
-  let skippedIncompleteSnapshots = 0
-  const investmentSnapshotInputs: InvestmentSnapshotInput[] = []
-  for (const inv of freshInvestments) {
-    const metrics = computeInvestmentMetrics(inv, freshTransactions, fxRates)
-    const status = priceStatusFor({
+  // 3. The CENTRAL valuation on the refreshed prices — the same object every
+  //    page shows. Snapshots are written from it, or not at all.
+  const today = todayLocalIso()
+  const state = await loadPortfolioState(supabase, today, fetchedAt, { userId })
+  const refreshedIds = new Set(priceResults.filter((r) => r.status === 'success').map((r) => r.id))
+  const openIds = new Set(state.valuation.positions.map((p) => p.investmentId))
+  const priceStatusCounts: Record<PriceStatus, number> = { fresh: 0, stale: 0, missing: 0, not_applicable: 0 }
+  for (const inv of state.investments) {
+    priceStatusCounts[priceStatusFor({
       isUnitBased: hasUnits(inv.type),
-      isOpen: (metrics.quantity ?? 0) > 0,
+      isOpen: openIds.has(inv.id),
       currentPrice: inv.current_price,
       refreshedThisRun: refreshedIds.has(inv.id),
-    })
-    priceStatusCounts[status]++
-    const numbers = [
-      metrics.currentValue,
-      metrics.remainingCostBasis,
-      metrics.realizedProfit,
-      metrics.unrealizedProfit,
-    ]
-    if (!numbers.every(Number.isFinite)) {
-      // Unknown EUR figures (missing FX) are not written as a fake number.
-      skippedIncompleteSnapshots++
-      continue
-    }
-    investmentSnapshotInputs.push({
-      investmentId: inv.id,
-      metrics,
-      currentPriceNative: inv.current_price ?? null,
-      currency: inv.currency ?? 'EUR',
-      quality: writeQuality
-        ? {
-            price_status: status,
-            price_as_of: hasUnits(inv.type) ? inv.price_last_updated_at : null,
-            fx_eur_per_unit:
-              inv.currency === 'EUR' ? 1 : fxRates[inv.currency ?? 'EUR'] ?? null,
-          }
-        : undefined,
-    })
+    })]++
   }
-
-  // 5. Portfolio-level snapshot — FAIL-CLOSED. If any required figure is
-  //    unknown, nothing is written for today (neither the portfolio row nor
-  //    the per-position rows): a partial snapshot would look complete later.
-  const portfolioMetrics = computePortfolioMetrics(
-    freshInvestments,
-    freshTransactions,
-    fxRates
-  )
-  if (!portfolioMetrics.complete || skippedIncompleteSnapshots > 0) {
-    return {
-      prices: priceSummary,
-      snapshot: null,
-      snapshotError:
-        `Snapshot not written: ${Math.max(portfolioMetrics.fxIncompleteCount, skippedIncompleteSnapshots)} ` +
-        'position(s) have a missing FX rate, so portfolio totals are incomplete.',
-      investmentSnapshots: { upserted: 0, error: null },
-      priceStatusCounts,
-      skippedIncompleteSnapshots,
-      quality: 'fx_incomplete',
-      fetchedAt,
-    }
-  }
-  const { snapshot, error: snapshotError } = await upsertTodaysSnapshot(
-    supabase,
-    userId,
-    portfolioMetrics,
-    source,
-    snapshotQualityColumnsEnabled()
-      ? {
-          stale_positions: priceStatusCounts.stale + priceStatusCounts.missing,
-          fx_incomplete_positions: portfolioMetrics.fxIncompleteCount,
-        }
-      : undefined
-  )
-
-  // 6. Per-investment snapshots (in EUR).
-  const { upserted, error: invSnapshotError } =
-    await upsertTodaysInvestmentSnapshots(
-      supabase,
-      userId,
-      investmentSnapshotInputs,
-      source
-    )
-
+  const written = await writeCentralSnapshots(supabase, state, {
+    userId, source, today, now: fetchedAt, writeQuality: snapshotQualityColumnsEnabled(),
+  })
   return {
     prices: priceSummary,
-    snapshot: snapshot ?? null,
-    snapshotError,
-    investmentSnapshots: { upserted, error: invSnapshotError },
+    snapshot: written.snapshot,
+    snapshotError: written.snapshotError,
+    investmentSnapshots: written.investmentSnapshots,
     priceStatusCounts,
-    skippedIncompleteSnapshots,
-    quality: 'complete',
+    skippedIncompleteSnapshots: state.valuation.positions.filter((p) => p.valueEur === null).length,
+    quality: written.quality,
+    valuationQuality: written.valuationQuality,
+    valuationGaps: state.valuation.gaps,
     fetchedAt,
   }
 }

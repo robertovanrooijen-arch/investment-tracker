@@ -5,6 +5,7 @@ import { txFeeInEur, txNativeToEur } from '@/lib/domain/calculations'
 import { tradeGrossNative } from '@/lib/domain/trade-amounts'
 import { isRewardTransaction, type ReturnFlow } from '@/lib/domain/flow-classification'
 import { quantityOn, valuePosition, type FxSeries, type OfficialValue, type PriceSeries } from '@/lib/valuation/historical-valuation'
+import { dealerFactorOn, dealerFactors, type DealerAnchor, type DealerFactor } from '@/lib/domain/dealer-anchor'
 import type { GainComponent, SleeveDay, SleeveStart, TwrDay, TwrInput, ValueQuality } from '@/lib/domain/twr'
 
 // ---------------------------------------------------------------------------
@@ -16,14 +17,19 @@ import type { GainComponent, SleeveDay, SleeveStart, TwrDay, TwrInput, ValueQual
 //
 // Values per day (close):
 //  * positions: quantity × exchange close × FX of the price date
-//    (lib/valuation/historical-valuation). Where an OFFICIAL statement value
-//    exists on the anchor date, the position is valued as
-//        official value × (market move since the anchor date)
-//    i.e. market value × k with k = official / market on the anchor date, so
-//    the period starts exactly at the statement value and no statement-vs-
-//    market difference shows up as a fake return on the first day.
-//    Metals have only a COMEX benchmark: with an anchor they are
-//    'reconstructed', without one 'estimated'.
+//    (lib/valuation/historical-valuation).
+//    - Listed shares, ETFs, crypto: market values. When a period STARTS on
+//      the date of an official statement, that statement is the start value;
+//      from the next day market values apply again. No factor is carried.
+//    - Dealer metals: on the dealer's basis (lib/domain/dealer-anchor): the
+//      last dealer value × the relative move of the COMEX benchmark.
+//  * valuation_basis_adjustment: whenever the valuation BASIS of a held
+//    position changes (statement → market for listed instruments; a new
+//    dealer value for metals) the step is recorded per sleeve and day as a
+//    basis adjustment. It is not a flow, not a contribution and not a gain:
+//    the TWR, the components and the investment result exclude it.
+//  * end date: the CENTRAL current valuation (lib/domain/current-valuation)
+//    when given, so the return ends at exactly the value every page shows.
 //  * cash: reconstructed from the records, day by day; on the anchor date
 //    the confirmed statement balance replaces it (the gap is reported).
 //    A negative balance that recovers within the normal settlement window is
@@ -35,7 +41,9 @@ import type { GainComponent, SleeveDay, SleeveStart, TwrDay, TwrInput, ValueQual
 //    'estimated'; a larger one makes that day's cash unknown — no percentage.
 // ---------------------------------------------------------------------------
 
-export const CASH_NEGATIVE_TOLERANCE_EUR = 1
+// Small broker overdrafts caused by fees/settlement are valid cash, not proof
+// of a missing deposit. They stay in the ledger but do not lower data quality.
+export const CASH_NEGATIVE_TOLERANCE_EUR = 5
 export const CASH_SHORTFALL_ABS_EUR = 25
 export const CASH_SHORTFALL_FRACTION = 0.01
 export const CASH_SETTLEMENT_WINDOW_DAYS = 3
@@ -47,7 +55,7 @@ export type OfficialAnchor = {
 }
 
 export type QualityIssue = {
-  kind: 'metal_benchmark' | 'cash_shortfall' | 'storage_costs_missing' | 'proposed_flow'
+  kind: 'metal_benchmark' | 'cash_shortfall' | 'storage_costs_missing' | 'proposed_flow' | 'valuation_basis_adjustment'
   from: string
   detail: string
 }
@@ -103,99 +111,54 @@ export function feeRowTarget(tx: Transaction): { level: 'position' | 'cash'; com
   return { level: 'position', component: 'fees' }
 }
 
-export function buildTwrLedger(args: {
-  investments: Investment[]
-  transactions: Transaction[]
-  flows: ReturnFlow[]
-  prices: Map<string, PriceSeries>
-  fx: FxSeries
-  fxRates: FxRates
-  startDate: string
-  endDate: string
-  anchor?: OfficialAnchor
-  accountingTreatments?: AccountingTreatment[]
-  // The app's live quote per investment (price per unit, native currency),
-  // used ONLY for the end date when it is from that same day: exchange
-  // closes for "today" are often not published yet, and the previous close
-  // would value a purchase made today at yesterday's price.
-  liveQuotes?: Map<string, { price: number; currency: string; asOf: string }>
-}): LedgerResult {
-  const {
-    investments, transactions, flows, prices, fx, fxRates, startDate, endDate, anchor,
-    accountingTreatments = [], liveQuotes,
-  } = args
-  const notes: string[] = []
-  const invById = new Map(investments.map((i) => [i.id, i]))
-  const txByInv = new Map<string, Transaction[]>()
-  for (const t of transactions) {
-    if (!invById.has(t.investment_id)) continue
-    const l = txByInv.get(t.investment_id) ?? []
-    l.push(t)
-    txByInv.set(t.investment_id, l)
-  }
-  const sleeves: Record<string, SleeveInfo> = {}
-  const relevantInv = investments.filter((i) => (txByInv.get(i.id) ?? []).length > 0)
-  for (const i of relevantInv) {
-    sleeves[i.id] = { kind: 'position', investmentId: i.id, platform: i.platform, name: i.name, currency: i.currency ?? 'EUR' }
-  }
-  const platforms = [...new Set([
-    ...relevantInv.map((i) => i.platform),
+// The value of a position on the end date, from the central current valuation.
+export type EndValue = {
+  valueEur: number
+  // The plain market/benchmark value of the same quantity at the same price
+  // (no dealer factor); the basis adjustment on the end date is measured
+  // against it. null when no current market price exists.
+  marketValueEur: number | null
+  priceNative: number | null
+  fxEurPerUnit: number | null
+  currency: string | null
+  quality: ValueQuality
+}
+
+/** Broker accounts with a cash sleeve: every platform with records, flows or treatments. */
+export function ledgerPlatforms(
+  investments: Investment[],
+  transactions: Transaction[],
+  flows: ReturnFlow[],
+  accountingTreatments: AccountingTreatment[] = []
+): string[] {
+  const withTx = new Set(transactions.map((t) => t.investment_id))
+  return [...new Set([
+    ...investments.filter((i) => withTx.has(i.id)).map((i) => i.platform),
     ...flows.map((f) => f.platform),
     ...accountingTreatments.map((t) => t.platform),
   ])].sort()
-  for (const p of platforms) sleeves[cashSleeve(p)] = { kind: 'cash', platform: p, name: `Cash ${p}` }
+}
 
-  // ---- anchor factors (official value / market value on the anchor date)
-  const factor = new Map<string, number>()
-  const anchorFactors: LedgerResult['anchorFactors'] = []
-  if (anchor) {
-    for (const o of anchor.positions) {
-      const inv = invById.get(o.investmentId)
-      if (!inv) continue
-      const txs = txByInv.get(inv.id) ?? []
-      const q = quantityOn(inv, txs, anchor.date)
-      if (o.quantity != null && Math.abs(o.quantity - q) > 1e-6) {
-        notes.push(`${inv.platform} ${inv.name}: statement quantity ${o.quantity} ≠ books ${q} on ${anchor.date}; statement not used.`)
-        continue
-      }
-      const v = valuePosition(inv, txs, anchor.date, prices, fx)
-      const market = v.valueEur ?? v.benchmarkValueEur
-      if (market && market > 0) {
-        factor.set(inv.id, o.valueEur / market)
-        anchorFactors.push({ investmentId: inv.id, factor: o.valueEur / market, officialEur: o.valueEur, marketEur: market, source: o.source })
-      } else {
-        notes.push(`${inv.platform} ${inv.name}: no market value on ${anchor.date} to anchor the statement value.`)
-      }
-    }
-  }
+export type RecordEffects = {
+  effects: Map<string, Map<string, Effect>> // date → sleeve → effect
+  externalByDate: Map<string, number>
+  grossByDate: Map<string, { in: number; out: number }>
+  notes: string[]
+}
 
-  type PosValue = { valueEur: number | null; priceNative: number | null; fxEurPerUnit: number | null; currency: string | null; quality: ValueQuality; reason?: string }
-  const valueOn = (inv: Investment, date: string): PosValue => {
-    const txs = txByInv.get(inv.id) ?? []
-    if (!hasUnits(inv.type)) {
-      return { valueEur: null, priceNative: null, fxEurPerUnit: null, currency: null, quality: 'estimated', reason: 'No historical balance for a non-unit position.' }
-    }
-    const v = valuePosition(inv, txs, date, prices, fx)
-    if (v.quality === 'closed') return { valueEur: 0, priceNative: null, fxEurPerUnit: null, currency: null, quality: 'reconstructed' }
-    const k = factor.get(inv.id)
-    const live = date === endDate ? liveQuotes?.get(inv.id) : undefined
-    if (live && live.asOf.slice(0, 10) === endDate) {
-      const rate = live.currency === 'EUR' ? 1 : [...(fx[live.currency] ?? [])].reverse().find((r) => r.date <= endDate)?.eurPerUnit ?? null
-      if (rate !== null) {
-        const quality: ValueQuality = inv.type === 'commodity' && k === undefined ? 'estimated' : 'reconstructed'
-        return { valueEur: v.quantity * live.price * rate * (k ?? 1), priceNative: live.price, fxEurPerUnit: rate, currency: live.currency, quality }
-      }
-    }
-    const market = v.quality === 'exact' ? v.valueEur : v.quality === 'benchmark_only' ? v.benchmarkValueEur : null
-    if (market === null) {
-      return { valueEur: null, priceNative: null, fxEurPerUnit: null, currency: null, quality: 'estimated', reason: `${inv.name}: ${v.note ?? v.quality}` }
-    }
-    const quality: ValueQuality = v.quality === 'benchmark_only' && k === undefined ? 'estimated' : 'reconstructed'
-    return { valueEur: market * (k ?? 1), priceNative: v.priceNative, fxEurPerUnit: v.fxEurPerUnit, currency: v.priceCurrency, quality }
-  }
-
-  // ---- per-day effects of transactions and flows
-  const effects = new Map<string, Map<string, Effect>>() // date → sleeve → effect
+/** Per-day effects of transactions, external flows and cash reconciliations on every sleeve. */
+export function buildRecordEffects(args: {
+  investments: Investment[]
+  transactions: Transaction[]
+  flows: ReturnFlow[]
+  fxRates: FxRates
+  endDate: string
+  accountingTreatments?: AccountingTreatment[]
+}): RecordEffects {
+  const { investments, transactions, flows, fxRates, endDate, accountingTreatments = [] } = args
+  const invById = new Map(investments.map((i) => [i.id, i]))
+  const notes: string[] = []
+  const effects = new Map<string, Map<string, Effect>>()
   const externalByDate = new Map<string, number>()
   const grossByDate = new Map<string, { in: number; out: number }>()
   const effectOf = (date: string, sleeve: string): Effect => {
@@ -273,13 +236,27 @@ export function buildTwrLedger(args: {
       'used for return calculation only, not counted as a contribution.'
     )
   }
-  const gainOf = (e: Effect | undefined) => (e ? Object.values(e.comps).reduce((t, v) => t + (v ?? 0), 0) : 0)
+  return { effects, externalByDate, grossByDate, notes }
+}
 
-  // ---- cash per platform, from the very first record, with the official
-  //      balance replacing the reconstruction on the anchor date.
+const gainOf = (e: Effect | undefined) => (e ? Object.values(e.comps).reduce((t, v) => t + (v ?? 0), 0) : 0)
+
+/**
+ * Cash per platform per day, from the very first record, with the official
+ * balance replacing the reconstruction on the anchor date.
+ */
+export function reconstructCash(args: {
+  effects: RecordEffects['effects']
+  platforms: string[]
+  startDate: string
+  endDate: string
+  anchor?: OfficialAnchor
+}): { values: Record<string, Map<string, number>>; notes: string[] } {
+  const { effects, platforms, startDate, endDate, anchor } = args
+  const notes: string[] = []
   const allDates = [...effects.keys()].sort()
   const firstDate = allDates[0] && allDates[0] < startDate ? allDates[0] : startDate
-  const cashValues: Record<string, Map<string, number>> = {}
+  const values: Record<string, Map<string, number>> = {}
   const officialCash = new Map((anchor?.cash ?? []).map((c) => [c.platform, c]))
   for (const p of platforms) {
     const series = new Map<string, number>()
@@ -294,15 +271,150 @@ export function buildTwrLedger(args: {
       }
       series.set(d, v)
     }
-    cashValues[p] = series
+    values[p] = series
   }
+  return { values, notes }
+}
+
+/** A persistent shortfall larger than this makes the cash (and the day's value) unknown. */
+export function isMaterialCashShortfall(shortfallEur: number, portfolioTotalEur: number): boolean {
+  return shortfallEur > Math.max(CASH_SHORTFALL_ABS_EUR, CASH_SHORTFALL_FRACTION * Math.abs(portfolioTotalEur))
+}
+
+export function buildTwrLedger(args: {
+  investments: Investment[]
+  transactions: Transaction[]
+  flows: ReturnFlow[]
+  prices: Map<string, PriceSeries>
+  fx: FxSeries
+  fxRates: FxRates
+  startDate: string
+  endDate: string
+  anchor?: OfficialAnchor
+  accountingTreatments?: AccountingTreatment[]
+  // The central current valuation per investment, used ONLY for the end date
+  // (exchange closes for "today" are often not published yet). When given, a
+  // held position without an entry here has no end value: no return.
+  endValues?: Map<string, EndValue>
+  // Dealer values of metals (official statements of any date, owner-reported
+  // observations): the anchors of the dealer basis.
+  dealerAnchors?: DealerAnchor[]
+}): LedgerResult {
+  const {
+    investments, transactions, flows, prices, fx, fxRates, startDate, endDate, anchor,
+    accountingTreatments = [], endValues, dealerAnchors = [],
+  } = args
+  const notes: string[] = []
+  const invById = new Map(investments.map((i) => [i.id, i]))
+  const txByInv = new Map<string, Transaction[]>()
+  for (const t of transactions) {
+    if (!invById.has(t.investment_id)) continue
+    const l = txByInv.get(t.investment_id) ?? []
+    l.push(t)
+    txByInv.set(t.investment_id, l)
+  }
+  const sleeves: Record<string, SleeveInfo> = {}
+  const relevantInv = investments.filter((i) => (txByInv.get(i.id) ?? []).length > 0)
+  for (const i of relevantInv) {
+    sleeves[i.id] = { kind: 'position', investmentId: i.id, platform: i.platform, name: i.name, currency: i.currency ?? 'EUR' }
+  }
+  const platforms = ledgerPlatforms(investments, transactions, flows, accountingTreatments)
+  for (const p of platforms) sleeves[cashSleeve(p)] = { kind: 'cash', platform: p, name: `Cash ${p}` }
+
+  // ---- anchor factors (official value / market value on the anchor date)
+  const factor = new Map<string, number>()
+  const anchorFactors: LedgerResult['anchorFactors'] = []
+  if (anchor) {
+    for (const o of anchor.positions) {
+      const inv = invById.get(o.investmentId)
+      if (!inv || inv.type === 'commodity') continue // metals: dealer anchors below
+      const txs = txByInv.get(inv.id) ?? []
+      const q = quantityOn(inv, txs, anchor.date)
+      if (o.quantity != null && Math.abs(o.quantity - q) > 1e-6) {
+        notes.push(`${inv.platform} ${inv.name}: statement quantity ${o.quantity} ≠ books ${q} on ${anchor.date}; statement not used.`)
+        continue
+      }
+      const v = valuePosition(inv, txs, anchor.date, prices, fx)
+      const market = v.valueEur ?? v.benchmarkValueEur
+      if (market && market > 0) {
+        factor.set(inv.id, o.valueEur / market)
+        anchorFactors.push({ investmentId: inv.id, factor: o.valueEur / market, officialEur: o.valueEur, marketEur: market, source: o.source })
+      } else {
+        notes.push(`${inv.platform} ${inv.name}: no market value on ${anchor.date} to anchor the statement value.`)
+      }
+    }
+  }
+  // Listed instruments: the statement value applies on the anchor date only,
+  // and only as the START of a period beginning on that date. A period
+  // running through the anchor date stays on market values.
+  const anchorIsStart = !!anchor && anchor.date === startDate
+  // Dealer metals: the year-end statement plus every other dealer value.
+  const metalAnchors: DealerAnchor[] = [
+    ...(anchor?.positions ?? [])
+      .filter((o) => invById.get(o.investmentId)?.type === 'commodity')
+      .map((o): DealerAnchor => ({ investmentId: o.investmentId, date: anchor!.date, valueEur: o.valueEur, quantity: o.quantity ?? null, source: o.source, kind: 'official_statement' })),
+    ...dealerAnchors.filter((a) => !(anchor && a.date === anchor.date && a.kind === 'official_statement' && anchor.positions.some((o) => o.investmentId === a.investmentId))),
+  ]
+  const dealer = new Map<string, DealerFactor[]>()
+  for (const inv of relevantInv.filter((i) => i.type === 'commodity')) {
+    const d = dealerFactors(inv, txByInv.get(inv.id) ?? [], metalAnchors, prices, fx)
+    notes.push(...d.notes)
+    if (d.factors.length) dealer.set(inv.id, d.factors)
+  }
+  // The factor on the close of `date` (1 = plain market/benchmark).
+  const factorOn = (inv: Investment, date: string): number => {
+    if (inv.type === 'commodity') return dealerFactorOn(dealer.get(inv.id) ?? [], date)?.factor ?? 1
+    return anchorIsStart && date === startDate ? factor.get(inv.id) ?? 1 : 1
+  }
+
+  type PosValue = {
+    valueEur: number | null
+    marketEur: number | null // the same quantity at the plain market/benchmark price
+    priceNative: number | null
+    fxEurPerUnit: number | null
+    currency: string | null
+    quality: ValueQuality
+    reason?: string
+  }
+  const valueOn = (inv: Investment, date: string): PosValue => {
+    const txs = txByInv.get(inv.id) ?? []
+    if (!hasUnits(inv.type)) {
+      return { valueEur: null, marketEur: null, priceNative: null, fxEurPerUnit: null, currency: null, quality: 'estimated', reason: 'No historical balance for a non-unit position.' }
+    }
+    const v = valuePosition(inv, txs, date, prices, fx)
+    if (v.quality === 'closed') return { valueEur: 0, marketEur: 0, priceNative: null, fxEurPerUnit: null, currency: null, quality: 'reconstructed' }
+    if (endValues && date === endDate) {
+      const ev = endValues.get(inv.id)
+      if (ev) return { ...ev, marketEur: ev.marketValueEur }
+      return { valueEur: null, marketEur: null, priceNative: null, fxEurPerUnit: null, currency: null, quality: 'estimated', reason: `${inv.name}: no validated current value.` }
+    }
+    const k = factorOn(inv, date)
+    const market = v.quality === 'exact' ? v.valueEur : v.quality === 'benchmark_only' ? v.benchmarkValueEur : null
+    if (market === null) {
+      return { valueEur: null, marketEur: null, priceNative: null, fxEurPerUnit: null, currency: null, quality: 'estimated', reason: `${inv.name}: ${v.note ?? v.quality}` }
+    }
+    // Metals stay 'estimated': even on the dealer basis the daily move is COMEX.
+    const quality: ValueQuality = v.quality === 'benchmark_only' ? 'estimated' : 'reconstructed'
+    return { valueEur: market * k, marketEur: market, priceNative: v.priceNative, fxEurPerUnit: v.fxEurPerUnit, currency: v.priceCurrency, quality }
+  }
+
+  // ---- per-day effects of transactions and flows
+  const rec = buildRecordEffects({ investments, transactions, flows, fxRates, endDate, accountingTreatments })
+  const { effects, externalByDate, grossByDate } = rec
+  notes.push(...rec.notes)
+  // ---- cash per platform (statement replaces the reconstruction on the anchor date)
+  const cash = reconstructCash({ effects, platforms, startDate, endDate, anchor })
+  const cashValues = cash.values
+  notes.push(...cash.notes)
+  const officialCash = new Map((anchor?.cash ?? []).map((c) => [c.platform, c]))
   // ---- start values
   const startValues: SleeveStart[] = []
   const prevPos = new Map<string, PosValue>()
   for (const i of relevantInv) {
     const pv = valueOn(i, startDate)
     prevPos.set(i.id, pv)
-    const official = anchor && anchor.date === startDate && factor.has(i.id)
+    const official = (anchor && anchor.date === startDate && factor.has(i.id)) ||
+      (i.type === 'commodity' && (dealer.get(i.id) ?? []).some((f) => f.date === startDate && f.kind === 'official_statement'))
     startValues.push({ sleeve: i.id, valueEur: pv.valueEur, quality: official ? 'confirmed' : pv.quality, missingReason: pv.reason })
   }
   for (const p of platforms) {
@@ -364,13 +476,34 @@ export function buildTwrLedger(args: {
       const comps = { ...(e?.comps ?? {}) }
       // FX effect on what was held overnight: q × price today × (fx today − fx yesterday).
       const qPrev = quantityOn(i, txByInv.get(i.id) ?? [], addDays(d, -1))
+      const qNow = quantityOn(i, txByInv.get(i.id) ?? [], d)
+      const kNow = pv.valueEur !== null && pv.marketEur ? pv.valueEur / pv.marketEur : factorOn(i, d)
       if (qPrev > 0 && pv.currency && pv.currency !== 'EUR' && pv.priceNative !== null && pv.fxEurPerUnit !== null && before.fxEurPerUnit !== null) {
-        comps.fx = (comps.fx ?? 0) + qPrev * (factor.get(i.id) ?? 1) * pv.priceNative * (pv.fxEurPerUnit - before.fxEurPerUnit)
+        comps.fx = (comps.fx ?? 0) + qPrev * kNow * pv.priceNative * (pv.fxEurPerUnit - before.fxEurPerUnit)
+      }
+      // A change of valuation basis on what was held overnight: not a gain.
+      const kPrev = d === addDays(startDate, 1) ? factorOn(i, startDate) : factorOn(i, addDays(d, -1))
+      let basisAdjustmentEur = 0
+      if (qPrev > 0 && qNow > 0 && pv.marketEur !== null && Math.abs(kNow - kPrev) > 1e-12) {
+        basisAdjustmentEur = pv.marketEur * (Math.min(qPrev, qNow) / qNow) * (kNow - kPrev)
+        if (Math.abs(basisAdjustmentEur) >= 0.005) {
+          addIssue(`basis:${i.id}:${d}`, {
+            kind: 'valuation_basis_adjustment', from: d,
+            detail: `${i.name} (${i.platform}): valuation basis changed on ${d} (${i.type === 'commodity' ? 'new dealer value' : 'statement value → market value'}); ` +
+              `${basisAdjustmentEur >= 0 ? '+' : ''}${basisAdjustmentEur.toFixed(2)} EUR is a valuation basis adjustment, not a result.`,
+          })
+        }
       }
       let quality = pv.quality
       const held = (pv.valueEur ?? 0) !== 0 || qPrev > 0
       if (held && i.type === 'commodity' && pv.quality === 'estimated' && pv.valueEur !== null) {
-        addIssue(`metal:${i.id}`, { kind: 'metal_benchmark', from: d, detail: `${i.name} (${i.platform}): no official statement value — COMEX benchmark only.` })
+        const f = dealerFactorOn(dealer.get(i.id) ?? [], d)
+        addIssue(`metal:${i.id}`, {
+          kind: 'metal_benchmark', from: d,
+          detail: f
+            ? `${i.name} (${i.platform}): dealer value of ${f.date} (${f.source}) moved with the COMEX benchmark.`
+            : `${i.name} (${i.platform}): no dealer value — COMEX benchmark only.`,
+        })
       }
       const gap = storageGapFrom.get(i.platform)
       if (held && i.type === 'commodity' && gap && d >= gap.from) {
@@ -380,7 +513,7 @@ export function buildTwrLedger(args: {
           detail: `${i.platform}: no storage costs booked after ${gap.last} while metal is still held — source period may be incomplete (not treated as €0).`,
         })
       }
-      sl.push({ sleeve: i.id, valueEur: pv.valueEur, netInflowEur: e?.inflow ?? 0, components: comps, quality, missingReason: pv.reason })
+      sl.push({ sleeve: i.id, valueEur: pv.valueEur, netInflowEur: e?.inflow ?? 0, basisAdjustmentEur, components: comps, quality, missingReason: pv.reason })
       prevPos.set(i.id, pv)
     }
     // Unfunded purchases (negative cash): material or not?
@@ -391,7 +524,7 @@ export function buildTwrLedger(args: {
     )
     const shortfall = cashToday.reduce((t, v, idx) => t + (persistentNegative[idx] ? -v : 0), 0)
     const total = positionsTotal + cashToday.reduce((t, v) => t + v, 0)
-    const material = shortfall > Math.max(CASH_SHORTFALL_ABS_EUR, CASH_SHORTFALL_FRACTION * Math.abs(total))
+    const material = isMaterialCashShortfall(shortfall, total)
     platforms.forEach((p, idx) => {
       const e = dayEffects?.get(cashSleeve(p))
       const v = cashToday[idx]

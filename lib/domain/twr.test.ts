@@ -351,7 +351,10 @@ describe('TWR engine', () => {
     assert.equal(closedHg.fullyClosed, true)
     close(closedHg.realizedEur, 719.8, 1e-6)
     close(closedHg.realizedReturn, 719.8 / 900, 1e-6) // +79.98%
-    assert.equal(y.twr.quality, 'reconstructed', 'metal anchored on a statement')
+    // The statement is the confirmed START; after it the metal is on the COMEX
+    // benchmark again (no year-end factor carried forward) → only 'estimated'.
+    assert.equal(y.twr.quality, 'estimated', 'after the statement date a metal is on the benchmark')
+    assert.equal(y.twr.startValueEur, 1157.08)
     // GoldRepublic first cycle (2025): €450.00 → €752.54, +€302.54 (+67.23%).
     const grFlows = grRows.filter((t) => t.type === 'buy').map((t) => flow(t.date, 50, 'bank_deposit', 'GoldRepublic'))
     grFlows.push(flow('2025-12-17', -752.54, 'withdrawal', 'GoldRepublic'))
@@ -389,14 +392,15 @@ describe('TWR engine', () => {
     assert.equal(r.twr.status, 'ok')
     assert.equal(r.twr.quality, 'estimated')
     const kinds = r.ledger.qualityIssues.map((i) => i.kind).sort()
-    assert.deepEqual(kinds, ['proposed_flow', 'storage_costs_missing'])
+    assert.deepEqual(kinds, ['metal_benchmark', 'proposed_flow', 'storage_costs_missing'])
     const storageIssue = r.ledger.qualityIssues.find((i) => i.kind === 'storage_costs_missing')!
     assert.equal(storageIssue.from, '2026-01-29') // 45 days after the last booked cost
-    // With the costs booked through the period, the anchored metal is just 'reconstructed'.
+    // With the costs booked through the period, only the benchmark remains:
+    // the statement value is not carried past its own date.
     const booked = [...txs, storage('2026-01-15'), storage('2026-02-16'), storage('2026-03-16')]
     const ok = run({ investments: [g], transactions: booked, flows: [flow('2025-10-01', 1010, 'bank_deposit', 'GoldRepublic')], prices: [xau], start: '2025-12-31', end: '2026-03-31', anchor })
-    assert.deepEqual(ok.ledger.qualityIssues, [])
-    assert.equal(ok.twr.quality, 'reconstructed')
+    assert.deepEqual(ok.ledger.qualityIssues.map((i) => i.kind), ['metal_benchmark'])
+    assert.equal(ok.twr.quality, 'estimated')
   })
 
   test('owner-approved private storage costs do not make the tracked portfolio incomplete', () => {
@@ -414,7 +418,9 @@ describe('TWR engine', () => {
       }],
     })
     assert.ok(!result.ledger.qualityIssues.some((i) => i.kind === 'storage_costs_missing'))
-    assert.equal(result.twr.quality, 'reconstructed')
+    // Only the market benchmark makes it 'estimated' — not the storage costs.
+    assert.deepEqual(result.ledger.qualityIssues.map((i) => i.kind), ['metal_benchmark'])
+    assert.equal(result.twr.quality, 'estimated')
   })
 
   test('cash reconciliation sets a small broker cash deficit to zero without becoming a contribution', () => {
@@ -466,11 +472,11 @@ describe('TWR engine', () => {
       .every((sleeve) => sleeve.quality === 'reconstructed'))
   })
 
-  test('a broker cash deficit that does not settle remains visible as missing funding', () => {
+  test('a material broker cash deficit that does not settle remains visible as missing funding', () => {
     const a = inv({ id: 'persistent-cash', platform: 'DEGIRO' })
     const connectionFee = tx({
-      investment_id: a.id, type: 'fee', date: '2025-04-02', amount: 1.79,
-      notes: 'DEGIRO Aansluitingskosten 2025',
+      investment_id: a.id, type: 'fee', date: '2025-04-02', amount: 7,
+      notes: 'Material unexplained broker cash deficit',
     })
     const result = run({
       investments: [a], transactions: [connectionFee], flows: [], prices: [],

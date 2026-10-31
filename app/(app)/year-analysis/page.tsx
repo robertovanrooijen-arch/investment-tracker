@@ -39,6 +39,7 @@ import {
   MonthlyCashflowChart,
 } from '@/components/year-analysis/charts'
 import { loadReturns } from '@/lib/returns/load-returns'
+import { todayLocalIso } from '@/lib/domain/snapshot'
 
 export const dynamic = 'force-dynamic'
 
@@ -145,7 +146,7 @@ export default async function YearAnalysisPage({
   searchParams: Promise<{ year?: string }>
 }) {
   const supabase = await createClient()
-  const todayIso = new Date().toISOString().slice(0, 10)
+  const todayIso = todayLocalIso()
 
   const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes, returnsData] = await Promise.all([
     fetchAllInvestments(supabase),
@@ -204,6 +205,11 @@ export default async function YearAnalysisPage({
     : availableYears[0]
 
   const liveMetrics = computePortfolioMetrics(investments, transactions, fxRates)
+  const isCurrentYear = year === Number(todayIso.slice(0, 4))
+  // Current year: every headline figure comes from the central valuation and
+  // result (no fallback). Earlier years still use the year-analysis engine.
+  const h = returnsData.headline
+  const endValueForSummary = isCurrentYear ? (h.currentValueEur ?? NaN) : liveMetrics.totalValue
   const estimatedFlowCount = capitalFlowEntries.filter(
     (f) => f.year === year && isEstimatedCapitalFlowSource(f.source)
   ).length
@@ -217,7 +223,7 @@ export default async function YearAnalysisPage({
     snapshots,
     capitalFlowEntries,
     transactions,
-    liveMetrics.totalValue
+    endValueForSummary
   )
   const startSnapshotIsImported =
     summary.startValueDate !== null &&
@@ -236,14 +242,17 @@ export default async function YearAnalysisPage({
     liveMetrics
   )
 
-  const isCurrentYear = year === new Date().getFullYear()
   const showSnapshotWarning = !isCurrentYear && (summary.startSnapshotMissing || summary.endSnapshotMissing)
-  const selectedYearReturnPercent = isCurrentYear && returnsData.ytd.twr !== null
-    ? returnsData.ytd.twr * 100
+  const selectedYearReturnPercent = isCurrentYear
+    ? (h.twrYtd === null ? null : h.twrYtd * 100)
     : summary.modifiedDietzReturnPercent
-  const selectedYearResultEur = isCurrentYear
-    ? returnsData.investmentResult?.period.totalEur ?? summary.growthExcludingContributionsEur
-    : summary.growthExcludingContributionsEur
+  const selectedYearResultEur = isCurrentYear ? h.totalResultYtdEur : summary.growthExcludingContributionsEur
+  const startValueEur = isCurrentYear ? returnsData.investmentResult?.period.valueStartEur ?? null : summary.startValueEur
+  const endValueEur = isCurrentYear ? h.currentValueEur : summary.endValueEur
+  const realisedInYearEur = isCurrentYear ? h.realisedYtdEur : summary.realizedPLInYearEur
+  const openPlEur = isCurrentYear ? h.unrealisedNowEur : summary.currentUnrealizedPLEur
+  const realisedPlusOpenEur = realisedInYearEur === null || openPlEur === null ? null : realisedInYearEur + openPlEur
+  const unavailable = h.resultsUnavailableReason ?? 'data incomplete'
 
   return (
     <div className="space-y-6">
@@ -322,26 +331,34 @@ export default async function YearAnalysisPage({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           label="Start portfolio value"
-          value={<PrivacyMoney value={summary.startValueEur} fallbackText="—" />}
-          hint={summary.startValueDate ? `As of ${summary.startValueDate}` : 'No snapshot available'}
+          value={<PrivacyMoney value={startValueEur} fallbackText="—" />}
+          hint={
+            isCurrentYear
+              ? (startValueEur === null ? unavailable : `As of ${returnsData.investmentResult?.period.from} · same start as Returns`)
+              : summary.startValueDate ? `As of ${summary.startValueDate}` : 'No snapshot available'
+          }
         />
         <StatCard
           label={isCurrentYear ? 'Current portfolio value' : 'End portfolio value'}
-          value={<PrivacyMoney value={summary.endValueEur} fallbackText="—" />}
-          hint={summary.endValueIsLive ? `Live value, as of ${summary.endValueDate}` : `As of ${summary.endValueDate}`}
+          value={<PrivacyMoney value={endValueEur} fallbackText="—" />}
+          hint={
+            isCurrentYear
+              ? (endValueEur === null ? h.currentValueUnavailableReason ?? undefined : 'Central portfolio value — same as Dashboard')
+              : summary.endValueIsLive ? `Live value, as of ${summary.endValueDate}` : `As of ${summary.endValueDate}`
+          }
         />
         <StatCard
           label={isCurrentYear ? 'Own money added' : 'Net external cash flow'}
           value={
             <PrivacyMoney
-              value={isCurrentYear ? returnsData.contributionsYtd.grossOwnContributionsEur : summary.netContributionsEur}
+              value={isCurrentYear ? h.ownContributionsYtdEur : summary.netContributionsEur}
               signed={!isCurrentYear}
               fallbackText="—"
             />
           }
           hint={
             isCurrentYear
-              ? `${money(returnsData.contributionsYtd.grossPlatformContributionsEur, 'EUR')} platform-funded · re-used sale proceeds excluded`
+              ? `${money(h.platformContributionsYtdEur, 'EUR')} platform-funded · ${money(h.reusedSaleProceedsYtdEur, 'EUR')} re-used sale proceeds (not new money)`
               : 'All external money in minus all external money out; this is not personal contributions.'
           }
         />
@@ -354,7 +371,7 @@ export default async function YearAnalysisPage({
               fallbackText={pctCell(selectedYearReturnPercent)}
             />
           }
-          hint={isCurrentYear ? 'Canonical result from the same engine as Returns and YTD.' : 'Selected-year value change after removing external cash flows.'}
+          hint={isCurrentYear ? (selectedYearResultEur === null ? unavailable : 'Canonical result from the same engine as Returns and YTD.') : 'Selected-year value change after removing external cash flows.'}
           tone={
             selectedYearResultEur === null
               ? 'neutral'
@@ -368,7 +385,7 @@ export default async function YearAnalysisPage({
         <StatCard
           label={isCurrentYear ? 'Portfolio return YTD (TWR)' : 'Modified Dietz return'}
           value={pctCell(selectedYearReturnPercent)}
-          hint={isCurrentYear ? 'Time-weighted return from the same daily engine as Returns.' : 'Approximate selected-year return adjusted for cash-flow timing.'}
+          hint={isCurrentYear ? (selectedYearReturnPercent === null ? unavailable : 'Time-weighted return from the same daily engine as Returns.') : 'Approximate selected-year return adjusted for cash-flow timing.'}
           tone={
             selectedYearReturnPercent === null
               ? 'neutral'
@@ -381,25 +398,25 @@ export default async function YearAnalysisPage({
         />
         <StatCard
           label="Realized P/L from sales this year"
-          value={signedMoney(summary.realizedPLInYearEur)}
-          hint="Recognized this year, but gains may have built up in earlier years."
-          tone={summary.realizedPLInYearEur > 0 ? 'positive' : summary.realizedPLInYearEur < 0 ? 'negative' : 'neutral'}
+          value={realisedInYearEur === null ? '—' : signedMoney(realisedInYearEur)}
+          hint={realisedInYearEur === null ? unavailable : 'Recognized this year, but gains may have built up in earlier years.'}
+          tone={realisedInYearEur === null ? 'neutral' : realisedInYearEur > 0 ? 'positive' : realisedInYearEur < 0 ? 'negative' : 'neutral'}
         />
         <StatCard
           label={isCurrentYear ? 'Current open-position P/L' : 'Unrealized P/L (approx.)'}
-          value={signedMoney(summary.currentUnrealizedPLEur)}
-          hint="Open positions at today's prices; not necessarily generated this year."
-          tone={summary.currentUnrealizedPLEur > 0 ? 'positive' : summary.currentUnrealizedPLEur < 0 ? 'negative' : 'neutral'}
+          value={openPlEur === null ? '—' : signedMoney(openPlEur)}
+          hint={openPlEur === null ? unavailable : "Open positions at today's prices; not necessarily generated this year."}
+          tone={openPlEur === null ? 'neutral' : openPlEur > 0 ? 'positive' : openPlEur < 0 ? 'negative' : 'neutral'}
         />
         <StatCard
           label="Realized this year + current open P/L"
-          value={signedMoney(summary.totalPLEur)}
+          value={realisedPlusOpenEur === null ? '—' : signedMoney(realisedPlusOpenEur)}
           hint={
-            summary.totalProfitLossPercent !== null
+            realisedPlusOpenEur === null ? unavailable : !isCurrentYear && summary.totalProfitLossPercent !== null
               ? `${pctCell(summary.totalProfitLossPercent)} of current cost basis. Not the same as the selected-year return — use ${isCurrentYear ? 'Portfolio return YTD (TWR)' : 'Growth after external cash flows / Modified Dietz'} for performance.`
               : `Not the same as the selected-year return — use ${isCurrentYear ? 'Portfolio return YTD (TWR)' : 'Growth after external cash flows / Modified Dietz'} for performance.`
           }
-          tone={summary.totalPLEur > 0 ? 'positive' : summary.totalPLEur < 0 ? 'negative' : 'neutral'}
+          tone={realisedPlusOpenEur === null ? 'neutral' : realisedPlusOpenEur > 0 ? 'positive' : realisedPlusOpenEur < 0 ? 'negative' : 'neutral'}
         />
       </div>
 

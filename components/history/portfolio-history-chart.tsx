@@ -24,11 +24,15 @@ import {
   plSeriesKey,
   CURRENT_PL_DEFINITION_VERSION,
   LEGACY_PL_DEFINITION_VERSION,
+  PL_DEFINITION_LABELS,
 } from '@/lib/domain/snapshot-method'
 
 // Profit/loss computed under the OLD definition lives in its own series so it
 // is never joined to current-definition points by one continuous line.
-const LEGACY_PROFIT_KEY = plSeriesKey('total_profit_eur', LEGACY_PL_DEFINITION_VERSION)
+// Every OLDER P/L definition gets its own dotted series (never connected to
+// the current one, nor to each other).
+const OLDER_PL_VERSIONS = Array.from({ length: CURRENT_PL_DEFINITION_VERSION - LEGACY_PL_DEFINITION_VERSION }, (_, i) => LEGACY_PL_DEFINITION_VERSION + i)
+const LEGACY_PROFIT_KEYS = OLDER_PL_VERSIONS.map((v) => plSeriesKey('total_profit_eur', v))
 import type { InvestmentType } from '@/types/database'
 
 // ── Prop types ─────────────────────────────────────────────────────────────
@@ -203,7 +207,8 @@ function fmtYAxis(n: number, mode: ViewMode): string {
 // ── Color lookup ───────────────────────────────────────────────────────────
 
 function colorForKey(dataKey: string): string {
-  if (dataKey === LEGACY_PROFIT_KEY) return '#86efac'
+  if (dataKey === LEGACY_PROFIT_KEYS[0]) return '#86efac'
+  if (LEGACY_PROFIT_KEYS.includes(dataKey)) return '#4ade80'
   const s = STATIC_SERIES.find((x) => x.key === dataKey)
   if (s) return s.color
   return TYPE_COLORS[dataKey] ?? '#9ca3af'
@@ -434,7 +439,7 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
 
     const numericKeys: string[] = [
       ...STATIC_SERIES.map((s) => s.key),
-      LEGACY_PROFIT_KEY,
+      ...LEGACY_PROFIT_KEYS,
       ...activeTypes,
     ]
 
@@ -486,7 +491,8 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
     ),
     [sampled],
   )
-  const hasLegacyProfit = displayData.some((r) => r[LEGACY_PROFIT_KEY] != null)
+  const legacyProfitVersions = OLDER_PL_VERSIONS.filter((v) => displayData.some((r) => r[plSeriesKey('total_profit_eur', v)] != null))
+  const hasLegacyProfit = legacyProfitVersions.length > 0
   const currentProfitPoints = displayData.filter((r) => r.total_profit_eur != null).length
 
   const renderTooltip = useCallback(
@@ -765,20 +771,20 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
                   ),
                 )}
 
-                {visibleSeries.has('total_profit_eur') && hasLegacyProfit && (
+                {visibleSeries.has('total_profit_eur') && legacyProfitVersions.map((v) => (
                   <Line
-                    key={LEGACY_PROFIT_KEY}
+                    key={plSeriesKey('total_profit_eur', v)}
                     type="monotone"
-                    dataKey={LEGACY_PROFIT_KEY}
-                    name={`Profit / loss (v${LEGACY_PL_DEFINITION_VERSION}, old definition)`}
-                    stroke={colorForKey(LEGACY_PROFIT_KEY)}
+                    dataKey={plSeriesKey('total_profit_eur', v)}
+                    name={`Profit / loss (v${v}, old definition)`}
+                    stroke={colorForKey(plSeriesKey('total_profit_eur', v))}
                     strokeWidth={1.5}
                     strokeDasharray="2 3"
                     dot={false}
                     activeDot={{ r: 3 }}
                     connectNulls={!openingPoint}
                   />
-                )}
+                ))}
 
                 {activeTypes.map((type) =>
                   !visibleSeries.has(type) ? null : (
@@ -811,8 +817,8 @@ export function PortfolioHistoryChart({ portfolioSnapshots, invSnapshots, livePo
         {visibleSeries.has('total_profit_eur') && hasLegacyProfit && (
           <p className="mt-3 text-xs text-amber-700">
             Profit / loss method change{plBreaks.length > 0 ? ` on ${plBreaks.map((b) => b.date).join(', ')}` : ''}:
-            the dotted line uses the old definition (v{LEGACY_PL_DEFINITION_VERSION} — dividend/interest on
-            holdings not counted as realized profit), the solid line the current one (v{CURRENT_PL_DEFINITION_VERSION}).
+            dotted lines use older definitions ({legacyProfitVersions.map((v) => PL_DEFINITION_LABELS[v] ?? `v${v}`).join('; ')}),
+            the solid line the current one ({PL_DEFINITION_LABELS[CURRENT_PL_DEFINITION_VERSION]}).
             They are deliberately not connected; the step between them is a method change, not a market move.
           </p>
         )}

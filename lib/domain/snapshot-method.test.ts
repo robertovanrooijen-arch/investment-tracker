@@ -16,8 +16,8 @@ import {
 import type { Investment, Transaction } from '@/types/database'
 
 describe('P/L definition versions', () => {
-  test('rows written before versioning are v1; the current definition is v2', () => {
-    assert.equal(CURRENT_PL_DEFINITION_VERSION, 2)
+  test('rows written before versioning are v1; the current definition is v3 (central result)', () => {
+    assert.equal(CURRENT_PL_DEFINITION_VERSION, 3)
     assert.equal(plDefinitionVersionOf({}), 1)
     assert.equal(plDefinitionVersionOf({ pl_definition_version: null }), 1)
     assert.equal(plDefinitionVersionOf({ pl_definition_version: 2 }), 2)
@@ -36,8 +36,9 @@ describe('P/L definition versions', () => {
   })
 
   test('different definitions land in different chart series, so they are never connected', () => {
-    assert.equal(plSeriesKey('total_profit_eur', 2), 'total_profit_eur')
+    assert.equal(plSeriesKey('total_profit_eur', 3), 'total_profit_eur')
     assert.equal(plSeriesKey('total_profit_eur', 1), 'total_profit_eur__v1')
+    assert.equal(plSeriesKey('total_profit_eur', 2), 'total_profit_eur__v2')
     assert.notEqual(plSeriesKey('total_profit_eur', 1), plSeriesKey('total_profit_eur', 2))
   })
 })
@@ -88,7 +89,7 @@ describe('P/L bridge across a definition change', () => {
   })
 
   test('a start snapshot on the current definition is checked normally', () => {
-    const bridge = audit(2)
+    const bridge = audit(CURRENT_PL_DEFINITION_VERSION)
     assert.notEqual(bridge.status, 'approximate')
     assert.doesNotMatch(bridge.explanation, /method change/i)
   })

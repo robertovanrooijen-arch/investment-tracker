@@ -8,6 +8,13 @@ The target account data from `manual/m12_google_funding_and_vusa_value_date.sql`
 was applied on 2026-10-30 together with ten confirmed 2025 statement balances.
 The post-deploy MA-3 migration was applied after production was verified on
 2026-10-31 and moved into `migrations/` under its actual Supabase version.
+M13 and M15 were applied on 2026-10-31 and are stored under their actual
+migration versions. M14 removed the €2.42 DEGIRO cash reconciliation after an
+exact-one-row guard. Live verification showed the underlying -€2.42 was a
+small temporary fee overdraft and current cash is only a rounding residue;
+cash stays in the audit ledger and outside the headline value. The
+owner-reported GoldRepublic silver observation for 2026-10-31 is stored in
+`broker_value_observations`.
 `manual/m8_u1_tr_contributions.sql` has not been run.
 
 | Folder | What | When |

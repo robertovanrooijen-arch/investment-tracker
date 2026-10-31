@@ -4,7 +4,7 @@ import type { ReturnsData, PeriodReturn } from '@/lib/returns/load-returns'
 import type { ReturnQuality } from '@/lib/domain/twr'
 import { CONTRIBUTION_TOLERANCE } from '@/lib/domain/twr'
 import { PERSONAL_RETURN_EXPLANATION } from '@/lib/domain/position-overview'
-import { DataQualityPanel, InvestmentResultBlock } from '@/components/returns/result-panels'
+import { DataGapsPanel, DataQualityPanel, InvestmentResultBlock } from '@/components/returns/result-panels'
 import type { ContributionSummary } from '@/lib/domain/flow-classification'
 
 function pct(n: number | null | undefined, digits = 2): string {
@@ -62,21 +62,13 @@ function PeriodCard({ period, primary }: { period: PeriodReturn; primary?: boole
           <dd><PrivacyMoney value={t.startValueEur} /></dd>
         </div>
         <div className="flex justify-between gap-2">
-          <dt>End value</dt>
+          <dt title="The return runs through broker cash, so this includes it.">End value (incl. broker cash)</dt>
           <dd><PrivacyMoney value={t.endValueEur} /></dd>
         </div>
       </dl>
-      {ok && t.truncated && (
-        <p className="mt-2 text-xs text-amber-800">
-          Only up to {fmtDate(t.endDate)}: later data is incomplete ({t.missing[0]?.reason ?? 'missing value'}).
-        </p>
-      )}
       {!ok && (
         <p className="mt-2 text-xs text-slate-600">
-          Not available: {t.missing[0]?.reason ?? 'missing data'}
-          {period.modifiedDietzEstimate !== null && (
-            <> Rough estimate (Modified Dietz): <span className="tabular-nums">{pct(period.modifiedDietzEstimate, 1)}</span>.</>
-          )}
+          Not available: {t.missing[0]?.reason ?? 'market or exchange-rate data is incomplete (see below)'}. No partial or estimated percentage is shown.
         </p>
       )}
     </div>
@@ -165,6 +157,8 @@ export function ReturnsView({ data }: { data: ReturnsData }) {
         ))}
       </section>
 
+      {!data.availability.ok && <DataGapsPanel data={data} />}
+
       <DataQualityPanel data={data} />
 
       <section className="grid grid-cols-1 md:grid-cols-2 gap-4 [&>*]:min-w-0">
@@ -193,6 +187,7 @@ export function ReturnsView({ data }: { data: ReturnsData }) {
 
       <InvestmentResultBlock data={data} />
 
+      {data.availability.ok && (<>
       <section className="space-y-3 min-w-0">
         <h2 className="text-lg font-semibold">Open positions · {ytdPeriod.label}</h2>
         <p className="text-xs text-slate-500">Hover a column title for exactly what is divided by what. Scroll sideways for details; the instrument stays on the left.</p>
@@ -358,6 +353,7 @@ export function ReturnsView({ data }: { data: ReturnsData }) {
           </div>
         )}
       </section>
+      </>)}
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Contributions</h2>

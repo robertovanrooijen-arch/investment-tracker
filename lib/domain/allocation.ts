@@ -2,6 +2,7 @@ import type { Investment, InvestmentType, Transaction } from '@/types/database'
 import { computeInvestmentMetrics } from '@/lib/domain/calculations'
 import type { FxRates } from '@/lib/domain/fx'
 import { categoryColorHex, categoryShade, commodityKindShade } from '@/lib/colors'
+import type { CurrentPosition, CurrentValuation } from '@/lib/domain/current-valuation'
 
 // ---------------------------------------------------------------------------
 // Portfolio allocation — single data-transformation layer for the Asset
@@ -72,22 +73,25 @@ function safeShare(value: number, total: number): number {
   return total > 0 ? value / total : 0
 }
 
+type ValueRow = { inv: Investment; value: number; status?: string }
+
 function buildCommodityHoldings(
-  rows: { inv: Investment; value: number }[],
+  rows: ValueRow[],
   categoryValue: number,
   totalValue: number,
 ): AllocationHolding[] {
-  const byKind = new Map<string, { value: number; label: string }>()
+  const byKind = new Map<string, { value: number; label: string; statuses: Set<string> }>()
 
-  for (const { inv, value } of rows) {
+  for (const { inv, value, status } of rows) {
     const kind = inv.commodity_kind
     const key = kind ?? 'other'
     const label = kind === 'gold' ? 'Gold' : kind === 'silver' ? 'Silver' : inv.name
     const entry = byKind.get(key)
     if (entry) {
       entry.value += value
+      if (status) entry.statuses.add(status)
     } else {
-      byKind.set(key, { value, label })
+      byKind.set(key, { value, label, statuses: new Set(status ? [status] : []) })
     }
   }
 
@@ -95,7 +99,8 @@ function buildCommodityHoldings(
     .sort((a, b) => b[1].value - a[1].value)
     .map(([key, entry], index) => ({
       id: key,
-      name: entry.label,
+      // How the value is known (e.g. market benchmark) is part of the label.
+      name: entry.statuses.size ? `${entry.label} · ${[...entry.statuses].join(' + ')}` : entry.label,
       ticker: null,
       value: entry.value,
       categoryPct: safeShare(entry.value, categoryValue),
@@ -117,7 +122,7 @@ function economicIdentifier(entity: { ticker: string | null; name: string }): st
 }
 
 function dedupeByEconomicIdentifier(
-  rows: { inv: Investment; value: number }[],
+  rows: ValueRow[],
 ): { name: string; ticker: string | null; value: number }[] {
   const groups = new Map<string, { name: string; ticker: string | null; value: number; maxValue: number }>()
 
@@ -143,7 +148,7 @@ function dedupeByEconomicIdentifier(
 
 function buildStandardHoldings(
   type: InvestmentType,
-  rows: { inv: Investment; value: number }[],
+  rows: ValueRow[],
   categoryValue: number,
   totalValue: number,
 ): AllocationHolding[] {
@@ -165,9 +170,7 @@ export function buildPortfolioAllocation(
   transactions: Transaction[],
   fxRates?: FxRates,
 ): PortfolioAllocation {
-  const rowsByType = new Map<InvestmentType, { inv: Investment; value: number }[]>()
-  let totalValue = 0
-
+  const rows: ValueRow[] = []
   let fxIncompleteCount = 0
   for (const inv of investments) {
     const { currentValue } = computeInvestmentMetrics(inv, transactions, fxRates)
@@ -175,26 +178,56 @@ export function buildPortfolioAllocation(
       fxIncompleteCount++
       continue
     }
-    if (!(currentValue > 0)) continue
-
-    const bucket = rowsByType.get(inv.type)
-    if (bucket) bucket.push({ inv, value: currentValue })
-    else rowsByType.set(inv.type, [{ inv, value: currentValue }])
-
-    totalValue += currentValue
+    rows.push({ inv, value: currentValue })
   }
+  return allocationFromRows(rows, fxIncompleteCount)
+}
 
+const VALUE_STATUS: Partial<Record<NonNullable<CurrentPosition['quality']>, string>> = {
+  estimated: 'market benchmark (estimated)',
+  owner_reported: 'owner-reported',
+  confirmed: 'statement value',
+}
+
+/**
+ * The allocation of the CENTRAL current valuation (lib/domain/current-valuation):
+ * the same values as Dashboard and Returns. Broker cash is not a holding.
+ * Fail-closed: an incomplete valuation gives no allocation at all.
+ */
+export function buildAllocationFromValuation(investments: Investment[], valuation: CurrentValuation): PortfolioAllocation {
+  if (valuation.status !== 'ok') return { totalValue: NaN, categories: [], holdings: [], fxIncompleteCount: 0 }
+  const invById = new Map(investments.map((i) => [i.id, i]))
+  const rows: ValueRow[] = valuation.positions
+    .filter((p) => invById.has(p.investmentId))
+    .map((p) => ({
+      inv: invById.get(p.investmentId)!,
+      value: p.valueEur as number,
+      status: p.type === 'commodity' && p.quality ? VALUE_STATUS[p.quality] : undefined,
+    }))
+  return allocationFromRows(rows, 0)
+}
+
+function allocationFromRows(rows: ValueRow[], fxIncompleteCount: number): PortfolioAllocation {
   if (fxIncompleteCount > 0) {
     return { totalValue: NaN, categories: [], holdings: [], fxIncompleteCount }
   }
+  const rowsByType = new Map<InvestmentType, ValueRow[]>()
+  let totalValue = 0
+  for (const row of rows) {
+    if (!(row.value > 0)) continue
+    const bucket = rowsByType.get(row.inv.type)
+    if (bucket) bucket.push(row)
+    else rowsByType.set(row.inv.type, [row])
+    totalValue += row.value
+  }
 
   const categories: AllocationCategory[] = []
-  for (const [type, rows] of rowsByType) {
-    const categoryValue = rows.reduce((sum, r) => sum + r.value, 0)
+  for (const [type, typeRows] of rowsByType) {
+    const categoryValue = typeRows.reduce((sum, r) => sum + r.value, 0)
     const holdings =
       type === 'commodity'
-        ? buildCommodityHoldings(rows, categoryValue, totalValue)
-        : buildStandardHoldings(type, rows, categoryValue, totalValue)
+        ? buildCommodityHoldings(typeRows, categoryValue, totalValue)
+        : buildStandardHoldings(type, typeRows, categoryValue, totalValue)
 
     categories.push({
       type,

@@ -4,15 +4,13 @@ import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { PageHeader } from '@/components/ui/page-header'
 import { CURRENT_PL_DEFINITION_VERSION } from '@/lib/domain/snapshot-method'
 import { StatCard } from '@/components/ui/stat-card'
+import { BrokerCashNote } from '@/components/ui/broker-cash-note'
 import { PortfolioHistoryChart } from '@/components/history/portfolio-history-chart'
 import { BreakdownChart } from '@/components/history/breakdown-chart'
 import type { BreakdownSnapshot, BreakdownEntity } from '@/components/history/breakdown-chart'
-import {
-  computePortfolioMetrics,
-  computeInvestmentMetrics,
-} from '@/lib/domain/calculations'
-import { loadFxRates } from '@/lib/domain/fx'
-import { money } from '@/lib/format'
+import Link from 'next/link'
+import { fmtDate, money } from '@/lib/format'
+import { todayLocalIso } from '@/lib/domain/snapshot'
 import { categoryLabel } from '@/lib/domain/allocation'
 import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
 import type { InvestmentType } from '@/types/database'
@@ -60,9 +58,9 @@ type DetailedInvSnapshotRow = {
 
 export default async function HistoryPage() {
   const supabase = await createClient()
-  const todayIso = new Date().toISOString().slice(0, 10)
+  const todayIso = todayLocalIso()
 
-  const [portfolioRes, invSnapshotRes, invRes, txRes, fxRes, returnsData] = await Promise.all([
+  const [portfolioRes, invSnapshotRes, invRes, txRes, returnsData] = await Promise.all([
     supabase
       .from('portfolio_snapshots')
       // '*' so pl_definition_version is included once migration M7 adds it.
@@ -79,7 +77,6 @@ export default async function HistoryPage() {
     ),
     fetchAllInvestments(supabase),
     fetchAllTransactions(supabase),
-    loadFxRates(supabase),
     loadReturns(supabase, todayIso),
   ])
 
@@ -116,53 +113,62 @@ export default async function HistoryPage() {
     type: row.type,
   }))
 
-  // ── Live metrics — same computation as Dashboard ───────────────────────────
+  // ── Today: the CENTRAL current valuation and result (same as Dashboard) ────
   const investments = invRes.data ?? []
   const transactions = txRes.data ?? []
-  const fxRates = fxRes.rates
+  const h = returnsData.headline
+  const valuation = returnsData.valuation
+  const resultRows = new Map(
+    (returnsData.investmentResult?.sinceStart.byInvestment ?? []).map((r) => [r.investmentId, r])
+  )
+  const valueById = new Map(valuation.positions.map((p) => [p.investmentId, p]))
+  // Per-investment figures for today, only when value AND result are complete.
+  const todayAvailable = h.currentValueEur !== null && h.resultsAvailable
+  const todayRows = investments
+    .filter((inv) => transactions.some((t) => t.investment_id === inv.id))
+    .map((inv) => {
+      const v = valueById.get(inv.id)
+      const r = resultRows.get(inv.id)
+      return {
+        inv,
+        valueEur: v?.valueEur ?? 0,
+        costEur: v?.remainingCostEur ?? 0,
+        plEur: r?.totalEur ?? 0,
+      }
+    })
 
-  // Compute all investment metrics once; reuse for all sections below
-  const invMetrics = investments.map((inv) => ({
-    inv,
-    m: computeInvestmentMetrics(inv, transactions, fxRates),
-  }))
-
-  const liveMetrics = computePortfolioMetrics(investments, transactions, fxRates)
-
-  // Build per-type map for overview chart's live point
   const byTypeMap = new Map<string, number>()
-  for (const { inv, m } of invMetrics) {
-    if (!m.isClosed || m.currentValue > 0) {
-      byTypeMap.set(inv.type, (byTypeMap.get(inv.type) ?? 0) + m.currentValue)
-    }
-  }
+  for (const p of valuation.positions) byTypeMap.set(p.type, (byTypeMap.get(p.type) ?? 0) + (p.valueEur ?? 0))
 
-  const livePoint: LivePoint = {
+  const livePoint: LivePoint | undefined = h.currentValueEur === null ? undefined : {
     date: todayIso,
-    totalValue: liveMetrics.totalValue,
-    totalInvested: liveMetrics.totalInvested,
-    totalUnrealized: liveMetrics.totalUnrealized,
-    totalRealized: liveMetrics.totalRealized,
+    totalValue: h.currentValueEur,
+    totalInvested: valuation.costOfOpenPositionsEur,
+    totalUnrealized: h.unrealisedNowEur ?? 0,
+    totalRealized: h.realisedSinceStartEur ?? 0,
     byType: Array.from(byTypeMap.entries()).map(([type, value]) => ({
       type: type as InvestmentType,
       value,
     })),
   }
 
-  // Inject today as a live snapshot; replace any stale existing entry
-  const todaySnap: PortfolioSnapshotRow = {
+  // Today's point = exactly the central current value. Profit/loss lines stay
+  // empty for today: the stored snapshots use an older P/L definition and
+  // the two must not be joined into one line.
+  const todaySnap: PortfolioSnapshotRow | null = h.currentValueEur === null ? null : {
     date: todayIso,
-    total_value_eur: liveMetrics.totalValue,
-    total_invested_eur: liveMetrics.totalInvested,
-    total_unrealized_eur: liveMetrics.totalUnrealized,
-    total_realized_eur: liveMetrics.totalRealized,
-    snapshot_source: 'live',
+    total_value_eur: h.currentValueEur,
+    total_invested_eur: valuation.costOfOpenPositionsEur,
+    total_unrealized_eur: null,
+    total_realized_eur: null,
+    snapshot_source: 'central_valuation',
     pl_definition_version: CURRENT_PL_DEFINITION_VERSION,
   }
 
-  // Yahoo/ECB + transactions reconstruct the total-value line every day.
-  // Stored snapshots still provide cost basis and P/L where those fields are
-  // genuinely known; null elsewhere prevents fabricated historical lines.
+  // Yahoo/ECB + transactions reconstruct the total-value line every day, but
+  // only when the reconstruction is complete (otherwise it is empty and the
+  // gaps are listed). Stored snapshots still provide cost basis and P/L where
+  // those fields are genuinely known; null elsewhere.
   const storedByDate = new Map(rawPortfolioSnapshots.map((s) => [s.date, s]))
   const reconstructed = returnsData.reconstructedHistory.map((point): PortfolioSnapshotRow => {
     const stored = storedByDate.get(point.date)
@@ -180,33 +186,32 @@ export default async function HistoryPage() {
   const portfolioSnapshots: PortfolioSnapshotRow[] = [
     ...rawPortfolioSnapshots.filter((s) => !reconstructedDates.has(s.date) && s.date !== todayIso),
     ...reconstructed.filter((s) => s.date !== todayIso),
-    todaySnap,
+    ...(todaySnap ? [todaySnap] : []),
   ].sort((a, b) => (a.date < b.date ? -1 : 1))
+  const historyComplete = returnsData.reconstructedHistory.length > 0
 
   // Today's per-investment data comes from livePoint, not invSnapshots
   const invSnapshots = rawInvSnapshots.filter((s) => s.date !== todayIso)
 
   // ── Profit tone ────────────────────────────────────────────────────────────
+  const totalResult = h.totalResultSinceStartEur
   const profitTone: 'positive' | 'negative' | 'neutral' =
-    liveMetrics.totalProfit > 0 ? 'positive' :
-    liveMetrics.totalProfit < 0 ? 'negative' : 'neutral'
+    totalResult === null ? 'neutral' : totalResult > 0 ? 'positive' : totalResult < 0 ? 'negative' : 'neutral'
 
   const hasInvestments = investments.length > 0
 
   // ── Section 2: Per-asset breakdown ────────────────────────────────────────
 
   // Sort investments by current value desc so default-visible picks the largest
-  const sortedInvMetrics = [...invMetrics]
-    .filter(({ m }) => m.hasActivity || m.currentValue > 0)
-    .sort((a, b) => b.m.currentValue - a.m.currentValue)
+  const sortedRows = [...todayRows].sort((a, b) => b.valueEur - a.valueEur)
 
-  const assetEntities: BreakdownEntity[] = sortedInvMetrics.map(({ inv }, i) => ({
+  const assetEntities: BreakdownEntity[] = sortedRows.map(({ inv }, i) => ({
     id: inv.id,
     label: inv.name,
     color: PALETTE[i % PALETTE.length],
   }))
 
-  // Historical asset snapshots from DB (today replaced by live below)
+  // Historical asset snapshots from DB (today replaced by the central values below)
   const assetHistSnaps: BreakdownSnapshot[] = rawDetailedInvSnapshots
     .filter((s) => s.date !== todayIso)
     .map((s) => ({
@@ -217,14 +222,11 @@ export default async function HistoryPage() {
       pl_eur: s.pl_eur,
     }))
 
-  // Live asset snapshots for today
-  const assetLiveSnaps: BreakdownSnapshot[] = sortedInvMetrics.map(({ inv, m }) => ({
-    date: todayIso,
-    entity_id: inv.id,
-    value_eur: m.currentValue,
-    cost_basis_eur: m.remainingCostBasis,
-    pl_eur: m.totalProfit,
-  }))
+  const assetLiveSnaps: BreakdownSnapshot[] = todayAvailable
+    ? sortedRows.map(({ inv, valueEur, costEur, plEur }) => ({
+        date: todayIso, entity_id: inv.id, value_eur: valueEur, cost_basis_eur: costEur, pl_eur: plEur,
+      }))
+    : []
 
   const assetSnapshots: BreakdownSnapshot[] = [...assetHistSnaps, ...assetLiveSnaps].sort(
     (a, b) => (a.date < b.date ? -1 : 1),
@@ -232,12 +234,16 @@ export default async function HistoryPage() {
 
   // ── Section 3: Per-platform breakdown ─────────────────────────────────────
 
-  // Build platform order sorted by current value desc
-  const platValueMap = new Map<string, number>()
-  for (const { inv, m } of invMetrics) {
-    platValueMap.set(inv.platform, (platValueMap.get(inv.platform) ?? 0) + m.currentValue)
+  const sumBy = (key: (inv: (typeof todayRows)[number]['inv']) => string) => {
+    const m = new Map<string, { value_eur: number; cost_basis_eur: number; pl_eur: number }>()
+    for (const r of todayRows) {
+      const prev = m.get(key(r.inv)) ?? { value_eur: 0, cost_basis_eur: 0, pl_eur: 0 }
+      m.set(key(r.inv), { value_eur: prev.value_eur + r.valueEur, cost_basis_eur: prev.cost_basis_eur + r.costEur, pl_eur: prev.pl_eur + r.plEur })
+    }
+    return m
   }
-  const sortedPlatforms = [...platValueMap.entries()].sort((a, b) => b[1] - a[1])
+  const platLiveMap = sumBy((inv) => inv.platform)
+  const sortedPlatforms = [...platLiveMap.entries()].sort((a, b) => b[1].value_eur - a[1].value_eur)
 
   const platformEntities: BreakdownEntity[] = sortedPlatforms.map(([platform], i) => ({
     id: platform,
@@ -271,20 +277,9 @@ export default async function HistoryPage() {
       })),
   )
 
-  // Live platform snapshots for today
-  const platLiveMap = new Map<string, { value_eur: number; cost_basis_eur: number; pl_eur: number }>()
-  for (const { inv, m } of invMetrics) {
-    const prev = platLiveMap.get(inv.platform) ?? { value_eur: 0, cost_basis_eur: 0, pl_eur: 0 }
-    platLiveMap.set(inv.platform, {
-      value_eur: prev.value_eur + m.currentValue,
-      cost_basis_eur: prev.cost_basis_eur + m.remainingCostBasis,
-      pl_eur: prev.pl_eur + m.totalProfit,
-    })
-  }
-
-  const platLiveSnaps: BreakdownSnapshot[] = Array.from(platLiveMap.entries()).map(
-    ([platform, metrics]) => ({ date: todayIso, entity_id: platform, ...metrics }),
-  )
+  const platLiveSnaps: BreakdownSnapshot[] = todayAvailable
+    ? Array.from(platLiveMap.entries()).map(([platform, metrics]) => ({ date: todayIso, entity_id: platform, ...metrics }))
+    : []
 
   const platformSnapshots: BreakdownSnapshot[] = [...platHistSnaps, ...platLiveSnaps].sort(
     (a, b) => (a.date < b.date ? -1 : 1),
@@ -293,11 +288,8 @@ export default async function HistoryPage() {
   // ── Section 4: By asset class ──────────────────────────────────────────────
 
   // Build type order sorted by current value desc
-  const typeValueMap = new Map<string, number>()
-  for (const { inv, m } of invMetrics) {
-    typeValueMap.set(inv.type, (typeValueMap.get(inv.type) ?? 0) + m.currentValue)
-  }
-  const sortedTypes = [...typeValueMap.entries()].sort((a, b) => b[1] - a[1])
+  const typeLiveMap = sumBy((inv) => inv.type)
+  const sortedTypes = [...typeLiveMap.entries()].sort((a, b) => b[1].value_eur - a[1].value_eur)
 
   const typeEntities: BreakdownEntity[] = sortedTypes.map(([type]) => ({
     id: type,
@@ -331,20 +323,9 @@ export default async function HistoryPage() {
       })),
   )
 
-  // Live type snapshots for today
-  const typeLiveMap = new Map<string, { value_eur: number; cost_basis_eur: number; pl_eur: number }>()
-  for (const { inv, m } of invMetrics) {
-    const prev = typeLiveMap.get(inv.type) ?? { value_eur: 0, cost_basis_eur: 0, pl_eur: 0 }
-    typeLiveMap.set(inv.type, {
-      value_eur: prev.value_eur + m.currentValue,
-      cost_basis_eur: prev.cost_basis_eur + m.remainingCostBasis,
-      pl_eur: prev.pl_eur + m.totalProfit,
-    })
-  }
-
-  const typeLiveSnaps: BreakdownSnapshot[] = Array.from(typeLiveMap.entries()).map(
-    ([type, metrics]) => ({ date: todayIso, entity_id: type, ...metrics }),
-  )
+  const typeLiveSnaps: BreakdownSnapshot[] = todayAvailable
+    ? Array.from(typeLiveMap.entries()).map(([type, metrics]) => ({ date: todayIso, entity_id: type, ...metrics }))
+    : []
 
   const typeSnapshots: BreakdownSnapshot[] = [...typeHistSnaps, ...typeLiveSnaps].sort(
     (a, b) => (a.date < b.date ? -1 : 1),
@@ -357,12 +338,30 @@ export default async function HistoryPage() {
         subtitle="How your portfolio value has changed over time, in EUR."
       />
 
-      <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
-        The total-value history is rebuilt when this page opens from your transactions, Yahoo daily closes and ECB
-        exchange rates. Stored broker snapshots remain the source for historical cost basis and profit/loss. Listed
-        shares and ETFs therefore update automatically; metal history remains a market benchmark rather than a
-        dealer statement value.
-      </p>
+      <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600 space-y-1">
+        <p>
+          <span className="font-medium text-slate-700">Source:</span> the total-value line is rebuilt when this page opens from
+          your transactions, Yahoo daily closes and ECB exchange rates, and ends on today&apos;s central portfolio value (the same
+          value as the Dashboard). Stored snapshots remain the only source for historical cost basis and profit/loss.
+        </p>
+        <p>
+          <span className="font-medium text-slate-700">Last market close:</span>{' '}
+          {returnsData.lastMarketCloseDate ? fmtDate(returnsData.lastMarketCloseDate) : '—'} ·{' '}
+          <span className="font-medium text-slate-700">oldest current price:</span>{' '}
+          {valuation.oldestPriceAsOf ? fmtDate(valuation.oldestPriceAsOf.slice(0, 10)) : '—'} ·{' '}
+          <span className="font-medium text-slate-700">quality:</span>{' '}
+          {historyComplete ? (valuation.quality === 'estimated' ? 'estimated (metals on a market benchmark)' : valuation.quality ?? '—') : 'incomplete'}
+        </p>
+        {!historyComplete && (
+          <p className="text-rose-700">
+            The reconstructed history is incomplete and is not shown ({h.resultsUnavailableReason ?? 'missing market data'}). Only stored
+            snapshots are plotted. <Link href="/returns" className="underline">See every missing source</Link>.
+          </p>
+        )}
+        {h.currentValueEur === null && (
+          <p className="text-rose-700">No point for today: {h.currentValueUnavailableReason}</p>
+        )}
+      </div>
 
       {/* Section 1: Portfolio overview */}
       <div className="space-y-4">
@@ -376,43 +375,30 @@ export default async function HistoryPage() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <StatCard
               label="Portfolio value"
-              value={<PrivacyMoney value={liveMetrics.totalValue} fallbackText="—" />}
-              hint="Current live value in EUR"
+              value={<PrivacyMoney value={h.currentValueEur} fallbackText="—" />}
+              hint={h.currentValueEur === null ? h.currentValueUnavailableReason ?? undefined : <>Same as Dashboard · <BrokerCashNote cash={h.brokerCash} /></>}
             />
             <StatCard
-              label="Total invested"
-              value={<PrivacyMoney value={liveMetrics.totalInvested} fallbackText="—" />}
-              hint="Cost basis in EUR"
+              label="Cost of open positions"
+              value={<PrivacyMoney value={h.costOfOpenPositionsEur} fallbackText="—" />}
+              hint="Remaining purchase cost of what you still hold"
             />
             <StatCard
-              label="Profit / loss"
-              value={
-                <PrivacyMoney
-                  value={liveMetrics.totalProfit}
-                  signed
-                  fallbackText="—"
-                />
-              }
+              label="Investment result"
+              value={<PrivacyMoney value={totalResult} signed fallbackText="—" />}
               hint={
-                liveMetrics.totalEverInvested > 0 ? (
+                totalResult === null ? (h.resultsUnavailableReason ?? undefined) : (
                   <PrivacyGate>
                     <>
-                      {money(liveMetrics.totalRealized, 'EUR')} realized ·{' '}
-                      {money(liveMetrics.totalUnrealized, 'EUR')} unrealized
+                      {money(h.realisedSinceStartEur ?? 0, 'EUR')} realised ·{' '}
+                      {money(h.unrealisedNowEur ?? 0, 'EUR')} unrealised · since start
                     </>
                   </PrivacyGate>
-                ) : undefined
+                )
               }
               tone={profitTone}
             />
           </div>
-        )}
-        {hasInvestments && (
-          <p className="text-xs text-slate-400 px-1">
-            Cash balances are included in portfolio value but excluded from investment P/L. The chart&apos;s
-            &quot;Profit / loss&quot; line reflects this for today; dates before this change may still include cash
-            in past snapshots.
-          </p>
         )}
       </div>
 

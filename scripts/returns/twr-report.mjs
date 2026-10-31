@@ -23,6 +23,7 @@ import { modifiedDietz, allTimeMoneyWeightedReturn } from '@/lib/domain/returns.
 import { buildPositionOverview } from '@/lib/domain/position-overview.ts'
 import { fetchPriceHistory, fetchEcbFxHistory } from '@/lib/market/history.ts'
 import { hasUnits } from '@/lib/domain/constants.ts'
+import { computeCurrentValuation, endValuesFrom } from '@/lib/domain/current-valuation.ts'
 
 const args = Object.fromEntries(process.argv.slice(2).map((a) => { const [k, v] = a.replace(/^--/, '').split('='); return [k, v ?? true] }))
 if (args.apply) { console.error('REFUSED: read-only report.'); process.exit(2) }
@@ -63,9 +64,14 @@ function anchorFor(date) {
 const anchorDate = Object.keys(officialFile).sort().pop()
 const anchor = anchorDate ? anchorFor(anchorDate) : undefined
 
-// The app's own live quotes (current_price, per unit), for the end date only.
-const liveQuotes = new Map(investments.filter((i) => i.current_price != null && i.price_last_updated_at)
-  .map((i) => [i.id, { price: i.current_price, currency: i.currency ?? 'EUR', asOf: i.price_last_updated_at }]))
+// The end date is valued exactly like the app: the central current valuation
+// (validated live quotes and current FX of the frozen export).
+const valuation = computeCurrentValuation({
+  investments, transactions, flows, anchor, today: endDate, now: acct.frozenAt,
+  fxRows: (acct.fxRates ?? []).map((r) => ({ currency: r.currency, eurPerUnit: Number(r.eur_per_unit), fetchedAt: r.fetched_at ?? null })),
+})
+if (valuation.status !== 'ok') console.log('Current valuation incomplete:', valuation.gaps.map((g) => g.reason).join(' | '))
+const endValues = endValuesFrom(valuation)
 const year = endDate.slice(0, 4)
 const periods = [
   { key: 'ytd', label: `YTD ${year}`, start: `${Number(year) - 1}-12-31` },
@@ -78,7 +84,7 @@ const pct = (x) => (x == null || !Number.isFinite(x) ? '—' : `${x >= 0 ? '+' :
 const eur = (x) => (x == null || !Number.isFinite(x) ? '—' : `€${x.toFixed(2)}`)
 
 for (const p of periods) {
-  const ledger = buildTwrLedger({ investments, transactions, flows, prices, fx, fxRates, startDate: p.start, endDate, anchor, liveQuotes })
+  const ledger = buildTwrLedger({ investments, transactions, flows, prices, fx, fxRates, startDate: p.start, endDate, anchor, endValues })
   const twr = computeTwr(ledger.input, { allowTruncation: true })
   const inPeriod = extFlows.filter((f) => f.date > p.start && f.date <= twr.endDate)
   const md = twr.startValueEur != null && twr.endValueEur != null

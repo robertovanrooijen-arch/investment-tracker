@@ -8,11 +8,11 @@ import type { FxSeries, PriceSeries } from '@/lib/valuation/historical-valuation
 
 const UA = { 'User-Agent': 'Mozilla/5.0 (compatible; InvestmentTracker/1.0)' }
 
-export async function fetchDailySeries(ticker: string, fromIso: string, fetchedAt: string): Promise<PriceSeries> {
+export async function fetchDailySeries(ticker: string, fromIso: string, fetchedAt: string, timeoutMs?: number): Promise<PriceSeries> {
   const p1 = Math.floor(Date.parse(`${fromIso}T00:00:00Z`) / 1000)
   const p2 = Math.floor(Date.now() / 1000)
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&period1=${p1}&period2=${p2}&events=split`
-  const r = await fetch(url, { headers: UA, cache: 'no-store' })
+  const r = await fetch(url, { headers: UA, cache: 'no-store', signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   const res = (await r.json())?.chart?.result?.[0]
   const ts: number[] = res?.timestamp ?? []
@@ -32,7 +32,8 @@ export async function fetchDailySeries(ticker: string, fromIso: string, fetchedA
 
 export async function fetchPriceHistory(
   tickers: string[],
-  fromIso: string
+  fromIso: string,
+  timeoutMs?: number
 ): Promise<{ prices: Map<string, PriceSeries>; errors: Record<string, string> }> {
   const fetchedAt = new Date().toISOString()
   const prices = new Map<string, PriceSeries>()
@@ -40,7 +41,9 @@ export async function fetchPriceHistory(
   await Promise.all(
     [...new Set(tickers)].map(async (t) => {
       try {
-        prices.set(t, await fetchDailySeries(t, fromIso, fetchedAt))
+        const series = await fetchDailySeries(t, fromIso, fetchedAt, timeoutMs)
+        if (!series.closes.length) throw new Error('no daily closes')
+        prices.set(t, series)
       } catch (e) {
         errors[t] = e instanceof Error ? e.message : String(e)
       }
@@ -49,11 +52,11 @@ export async function fetchPriceHistory(
   return { prices, errors }
 }
 
-export async function fetchEcbFxHistory(currencies: string[], fromIso: string, toIso: string): Promise<FxSeries> {
+export async function fetchEcbFxHistory(currencies: string[], fromIso: string, toIso: string, timeoutMs?: number): Promise<FxSeries> {
   const wanted = [...new Set(currencies.filter((c) => c !== 'EUR'))]
   const fx: FxSeries = {}
   if (!wanted.length) return fx
-  const r = await fetch(`https://api.frankfurter.app/${fromIso}..${toIso}?from=EUR&to=${wanted.join(',')}`, { cache: 'no-store' })
+  const r = await fetch(`https://api.frankfurter.app/${fromIso}..${toIso}?from=EUR&to=${wanted.join(',')}`, { cache: 'no-store', signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined })
   if (!r.ok) throw new Error(`FX HTTP ${r.status}`)
   const j = (await r.json()) as { rates?: Record<string, Record<string, number>> }
   for (const c of wanted) {
@@ -61,6 +64,7 @@ export async function fetchEcbFxHistory(currencies: string[], fromIso: string, t
       .map(([date, rates]) => ({ date, eurPerUnit: 1 / rates[c] }))
       .filter((x) => Number.isFinite(x.eurPerUnit))
       .sort((a, b) => (a.date < b.date ? -1 : 1))
+    if (!fx[c].length) throw new Error(`no ${c} rates`)
   }
   return fx
 }

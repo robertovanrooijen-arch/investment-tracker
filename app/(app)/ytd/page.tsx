@@ -6,11 +6,12 @@ import { CURRENT_PL_DEFINITION_VERSION } from '@/lib/domain/snapshot-method'
 import { DataQualityNotice } from '@/components/ui/data-quality-notice'
 import { unfundedPlatforms } from '@/lib/domain/reconciliation'
 import { StatCard } from '@/components/ui/stat-card'
+import { BrokerCashNote } from '@/components/ui/broker-cash-note'
 import { PortfolioHistoryChart } from '@/components/history/portfolio-history-chart'
 import type { LivePoint, PortfolioSnapshot as ChartPortfolioSnapshot, InvSnapshot } from '@/components/history/portfolio-history-chart'
 import { PortfolioBridgeChart, AssetClassYtdChart } from '@/components/year-analysis/charts'
 import { MonthlyPerformanceTable, BestWorstCards, AssetBreakdownTable } from '@/components/ytd/ytd-components'
-import { computePortfolioMetrics } from '@/lib/domain/calculations'
+import { todayLocalIso } from '@/lib/domain/snapshot'
 import { loadFxRates } from '@/lib/domain/fx'
 import { fmtDate, money } from '@/lib/format'
 import {
@@ -21,7 +22,6 @@ import {
   computeYearPortfolioSummary,
   computePortfolioBridgeData,
   computeMonthlyYtdPerformance,
-  getAvailableYears,
 } from '@/lib/domain/year-analysis'
 import type { CapitalFlowEntryForYear, InvestmentSnapshotForYtd } from '@/lib/domain/year-analysis'
 import { PrivacyMoney, PrivacyGate } from '@/components/ui/privacy-value'
@@ -55,9 +55,9 @@ function fmtPercent(n: number | null, digits = 2): string {
 
 export default async function YtdPage() {
   const supabase = await createClient()
-  const year = new Date().getFullYear()
+  const todayIso = todayLocalIso()
+  const year = Number(todayIso.slice(0, 4))
   const yearStartIso = `${year}-01-01`
-  const todayIso = new Date().toISOString().slice(0, 10)
 
   const [invRes, txRes, fxRes, snapRes, flowRes, invSnapRes, returnsData] = await Promise.all([
     fetchAllInvestments(supabase),
@@ -128,8 +128,11 @@ export default async function YtdPage() {
     .filter((r) => r.investment != null)
     .map((r) => ({ investment_id: r.investment_id, date: r.date, value_eur: Number(r.value_eur) }))
 
-  // ── Live metrics — same computation as Dashboard ─────────────────────────
-  const liveMetrics = computePortfolioMetrics(investments, transactions, fxRates)
+  // ── Today: the CENTRAL current value and result (same as Dashboard) ──────
+  const h = returnsData.headline
+  const valuation = returnsData.valuation
+  // The year sections below end on the same central value (NaN → unavailable).
+  const centralValue = h.currentValueEur ?? NaN
 
   // ── Core YTD numbers — all reused from Year Analysis' current-year engine.
   // "YTD" is exactly "Year Analysis for the current, still-open year".
@@ -143,9 +146,8 @@ export default async function YtdPage() {
     snapshotsForYear,
     capitalFlowEntries,
     transactions,
-    liveMetrics.totalValue
+    centralValue
   )
-  const canonicalYtd = returnsData.ytd
 
   // Edge case: user started investing during the current year, so there is
   // genuinely no snapshot at/before Jan 1 — startValueEur comes back null.
@@ -154,8 +156,9 @@ export default async function YtdPage() {
   // card only. The shared bridge/monthly/Modified-Dietz calculations are
   // NOT patched here — they still honestly show "unavailable" until a real
   // year-start snapshot exists, matching how Year Analysis treats this.
-  const startedThisYear = getAvailableYears(transactions).every((y) => y >= year)
-  const displayStartValueEur = summary.startValueEur ?? (startedThisYear ? 0 : null)
+  // Opening point of the chart: the central start value (31 Dec), never a
+  // separate estimate.
+  const displayStartValueEur = returnsData.investmentResult?.period.valueStartEur ?? null
 
   const bridgeData = computePortfolioBridgeData(summary)
   const monthlyRows = computeMonthlyYtdPerformance(
@@ -165,39 +168,23 @@ export default async function YtdPage() {
     snapshotsForYear,
     capitalFlowEntries,
     transactions,
-    liveMetrics.totalValue
+    centralValue
   )
   const ytdRows = computeInvestmentYtdRows(investments, transactions, year, fxRates, investmentSnapshots)
 
   // ── Main chart data — same shape/plumbing as the History page, but
   // scoped to this calendar year only (Jan 1 → today), so the reused
   // PortfolioHistoryChart's "All" preset means "all of YTD".
-  const byTypeMap = new Map<string, number>()
-  for (const inv of investments) {
-    const row = assetRows.find((r) => r.investmentId === inv.id)
-    if (row && (row.status !== 'closed' || row.currentValueEur > 0)) {
-      byTypeMap.set(inv.type, (byTypeMap.get(inv.type) ?? 0) + row.currentValueEur)
-    }
-  }
-  // Where the start value comes from (coverage of historical valuations).
-  const startSnapshotSource =
-    rawSnapshots.find((r) => r.date === summary.startValueDate)?.snapshot_source ?? null
-  const startValueSourceLabel =
-    startSnapshotSource === 'cron' || startSnapshotSource === 'manual_refresh'
-      ? 'live snapshot'
-      : startSnapshotSource?.startsWith('reconstructed')
-        ? 'reconstructed from historical prices (derived)'
-        : startSnapshotSource
-          ? `imported/statement snapshot (${startSnapshotSource})`
-          : 'source unknown'
-
-  const livePoint: LivePoint = {
+  // Per-type values for today come from the central valuation.
+  const centralByType = new Map<string, number>()
+  for (const p of valuation.positions) centralByType.set(p.type, (centralByType.get(p.type) ?? 0) + (p.valueEur ?? 0))
+  const livePoint: LivePoint | undefined = h.currentValueEur === null ? undefined : {
     date: todayIso,
-    totalValue: liveMetrics.totalValue,
-    totalInvested: liveMetrics.totalInvested,
-    totalUnrealized: liveMetrics.totalUnrealized,
-    totalRealized: liveMetrics.totalRealized,
-    byType: Array.from(byTypeMap.entries()).map(([type, value]) => ({ type: type as InvestmentType, value })),
+    totalValue: h.currentValueEur,
+    totalInvested: valuation.costOfOpenPositionsEur,
+    totalUnrealized: h.unrealisedNowEur ?? 0,
+    totalRealized: h.realisedSinceStartEur ?? 0,
+    byType: Array.from(centralByType.entries()).map(([type, value]) => ({ type: type as InvestmentType, value })),
   }
 
   const storedYtdByDate = new Map(rawSnapshots.filter((s) => s.date >= yearStartIso).map((s) => [s.date, s]))
@@ -220,15 +207,17 @@ export default async function YtdPage() {
     ...rawSnapshots
       .filter((s) => s.date >= yearStartIso && s.date !== todayIso && !reconstructedYtdDates.has(s.date)),
     ...reconstructedYtd,
-    {
+    // Today = exactly the central value; P/L lines stay empty for today (the
+    // stored snapshots use an older P/L definition).
+    ...(h.currentValueEur === null ? [] : [{
       date: todayIso,
-      total_value_eur: liveMetrics.totalValue,
-      total_invested_eur: liveMetrics.totalInvested,
-      total_unrealized_eur: liveMetrics.totalUnrealized,
-      total_realized_eur: liveMetrics.totalRealized,
-      snapshot_source: 'live',
+      total_value_eur: h.currentValueEur,
+      total_invested_eur: valuation.costOfOpenPositionsEur,
+      total_unrealized_eur: null,
+      total_realized_eur: null,
+      snapshot_source: 'central_valuation',
       pl_definition_version: CURRENT_PL_DEFINITION_VERSION,
-    },
+    }]),
   ].sort((a, b) => (a.date < b.date ? -1 : 1))
 
   const ytdInvSnapshots: InvSnapshot[] = rawInvSnapshots
@@ -266,8 +255,7 @@ export default async function YtdPage() {
       />
 
       <DataQualityNotice
-        fxIncompleteCount={Math.max(liveMetrics.fxIncompleteCount, summary.fxIncompleteCount)}
-        fxLiveFallbackCount={liveMetrics.fxLiveFallbackCount}
+        fxIncompleteCount={summary.fxIncompleteCount}
         legacyContributionsSkippedFx={summary.legacyContributionsSkippedFx}
         unfundedPlatforms={unfundedPlatforms(investments, transactions, capitalFlowEntries, fxRates)}
       />
@@ -276,39 +264,37 @@ export default async function YtdPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           label="Portfolio value"
-          value={<PrivacyMoney value={liveMetrics.totalValue} fallbackText="—" />}
-          hint="Current live value, EUR"
+          value={<PrivacyMoney value={h.currentValueEur} fallbackText="—" />}
+          hint={h.currentValueEur === null ? h.currentValueUnavailableReason ?? undefined : <>Same as Dashboard · <BrokerCashNote cash={h.brokerCash} /></>}
         />
         <StatCard
           label="Portfolio return YTD (TWR)"
-          value={canonicalYtd.twr === null ? '—' : fmtPercent(canonicalYtd.twr * 100)}
+          value={h.twrYtd === null ? '—' : fmtPercent(h.twrYtd * 100)}
           hint={
-            canonicalYtd.status === 'ok' ? (
+            h.twrYtd !== null ? (
               <PrivacyGate fallback="Time-weighted return">
                 <>
-                  <PrivacyMoney value={returnsData.investmentResult?.period.totalEur ?? null} signed fallbackText="—" /> investment result · cash-flow timing removed
+                  <PrivacyMoney value={h.totalResultYtdEur} signed fallbackText="—" /> investment result · cash-flow timing removed
                 </>
               </PrivacyGate>
             ) : (
-              canonicalYtd.missing[0]?.reason ?? 'Return unavailable because historical data is incomplete'
+              h.resultsUnavailableReason ?? 'Return unavailable because historical data is incomplete'
             )
           }
-          tone={canonicalYtd.twr === null ? 'neutral' : canonicalYtd.twr > 0 ? 'positive' : canonicalYtd.twr < 0 ? 'negative' : 'neutral'}
+          tone={h.twrYtd === null ? 'neutral' : h.twrYtd > 0 ? 'positive' : h.twrYtd < 0 ? 'negative' : 'neutral'}
         />
         <StatCard
           label="Own money added YTD"
-          value={<PrivacyMoney value={returnsData.contributionsYtd.grossOwnContributionsEur} fallbackText="—" />}
-          hint={`${money(returnsData.contributionsYtd.grossPlatformContributionsEur, 'EUR')} platform-funded · re-used sale proceeds excluded`}
+          value={<PrivacyMoney value={h.ownContributionsYtdEur} fallbackText="—" />}
+          hint={`${money(h.platformContributionsYtdEur, 'EUR')} platform-funded · ${money(h.reusedSaleProceedsYtdEur, 'EUR')} re-used sale proceeds (not new money)`}
         />
         <StatCard
           label="Start-of-year value"
-          value={<PrivacyMoney value={displayStartValueEur} fallbackText="—" />}
+          value={<PrivacyMoney value={returnsData.investmentResult?.period.valueStartEur ?? null} fallbackText="—" />}
           hint={
-            summary.startValueEur !== null
-              ? `As of ${summary.startValueDate} · ${startValueSourceLabel}`
-              : startedThisYear
-                ? 'No prior activity — started investing this year'
-                : 'No start-of-year snapshot available'
+            returnsData.investmentResult
+              ? `As of ${fmtDate(returnsData.investmentResult.period.from)} · ${returnsData.anchorSource ? `official statements (${returnsData.anchorSource})` : 'reconstructed from market closes'}`
+              : h.resultsUnavailableReason ?? 'Not available'
           }
         />
       </div>

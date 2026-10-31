@@ -4,6 +4,7 @@ import type { ReturnsData } from '@/lib/returns/load-returns'
 import type { QualityIssue } from '@/lib/domain/twr-ledger'
 import type { ResultColumn } from '@/lib/domain/investment-result'
 import { CONTRIBUTION_TOLERANCE } from '@/lib/domain/twr'
+import type { DataGap } from '@/lib/domain/current-valuation'
 
 function tone(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n) || Math.abs(n) < 0.005) return 'text-slate-900'
@@ -17,7 +18,7 @@ export function InvestmentResultBlock({ data }: { data: ReturnsData }) {
     return (
       <section className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600">
         <h2 className="text-lg font-semibold text-slate-900">Investment result</h2>
-        <p className="mt-1">Not available while a return period is incomplete (see Data quality below).</p>
+        <p className="mt-1">Not available: {data.availability.gaps[0]?.reason ?? 'a return period is incomplete'}. No partial result is shown.</p>
       </section>
     )
   }
@@ -88,8 +89,16 @@ export function InvestmentResultBlock({ data }: { data: ReturnsData }) {
                 </td>
               ))}
             </tr>
-            <tr title="End value − start value − net external cash flow (deposits − withdrawals), from the same values as the return.">
-              <td className="px-4 py-2 text-xs text-slate-500">Check: value change − net external cash flow</td>
+            <tr title="Changes of valuation source (statement → market, a new dealer value): they move the value but are no result.">
+              <td className="px-4 py-2 text-xs text-slate-500">Valuation basis adjustment (not in the result)</td>
+              {cols.map((c) => (
+                <td key={c.title} className="px-4 py-2 text-right text-xs tabular-nums text-slate-500">
+                  <PrivacyMoney value={c.c.valuationBasisAdjustmentEur} signed />
+                </td>
+              ))}
+            </tr>
+            <tr title="End value − start value − net external cash flow (deposits − withdrawals) − valuation basis adjustment, from the same values as the return.">
+              <td className="px-4 py-2 text-xs text-slate-500">Check: value change − net external cash flow − basis adjustment</td>
               {cols.map((c) => (
                 <td key={c.title} className="px-4 py-2 text-right text-xs tabular-nums text-slate-500">
                   <PrivacyMoney value={c.c.checkEur} signed /> {c.c.reconciled ? <span className="text-emerald-700">✓</span> : <span className="text-rose-700">≠</span>}
@@ -116,12 +125,14 @@ export function InvestmentResultBlock({ data }: { data: ReturnsData }) {
   )
 }
 
-type Category = 'calculation_error' | 'missing_data' | 'estimated_benchmark' | 'officially_confirmed' | 'owner_decision'
+type Category = 'calculation_error' | 'missing_data' | 'estimated_benchmark' | 'basis_adjustment' | 'owner_reported' | 'officially_confirmed' | 'owner_decision'
 
 const CATEGORY: Record<Category, { title: string; cls: string; help: string }> = {
   calculation_error: { title: 'Calculation error', cls: 'border-rose-200 bg-rose-50 text-rose-900', help: 'Figures that do not add up. None means every check passed.' },
   missing_data: { title: 'Missing data', cls: 'border-amber-200 bg-amber-50 text-amber-900', help: 'Something is not in the records yet.' },
   estimated_benchmark: { title: 'Estimated with a market benchmark', cls: 'border-sky-200 bg-sky-50 text-sky-900', help: 'Valued with a market price (e.g. COMEX) instead of the broker’s own price. Not an error.' },
+  basis_adjustment: { title: 'Valuation basis adjustments (not a result)', cls: 'border-indigo-200 bg-indigo-50 text-indigo-900', help: 'A change of valuation source (statement → market, a new dealer value). Not money in or out, not profit or loss, not in the return.' },
+  owner_reported: { title: 'Owner-reported broker values', cls: 'border-violet-200 bg-violet-50 text-violet-900', help: 'Read off the broker’s site by you, without a statement. Not confirmed.' },
   officially_confirmed: { title: 'Officially confirmed statement values', cls: 'border-emerald-200 bg-emerald-50 text-emerald-900', help: 'Values taken from broker statements.' },
   owner_decision: { title: 'Owner-approved treatments', cls: 'border-slate-200 bg-white text-slate-700', help: 'Explicit decisions about how records are treated.' },
 }
@@ -131,11 +142,57 @@ const ISSUE_CATEGORY: Record<QualityIssue['kind'], Category> = {
   cash_shortfall: 'missing_data',
   storage_costs_missing: 'missing_data',
   proposed_flow: 'missing_data',
+  valuation_basis_adjustment: 'basis_adjustment',
+}
+
+const GAP_SOURCE: Record<DataGap['source'], string> = {
+  live_quote: 'Current price',
+  fx_rate: 'Current exchange rate',
+  transaction_fx: 'Exchange rate of a past transaction',
+  cash: 'Broker cash',
+  yahoo_history: 'Yahoo daily closes',
+  ecb_fx: 'ECB exchange rates',
+  return_period: 'Return period',
+  consistency: 'Internal check',
+}
+
+// Shown instead of every return figure when the central engine is blocked.
+export function DataGapsPanel({ data }: { data: ReturnsData }) {
+  return (
+    <section className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900 space-y-2 min-w-0">
+      <p className="font-medium">Returns, XIRR and investment result are not shown: the data is incomplete</p>
+      <p className="text-xs">Nothing is estimated, shortened or taken from another calculation. They come back as soon as every source below is complete.</p>
+      <div className="max-w-full overflow-x-auto">
+        <table className="min-w-full text-xs">
+          <thead>
+            <tr className="text-left text-rose-800">
+              <th className="py-1 pr-3 font-medium">Missing source</th>
+              <th className="py-1 pr-3 font-medium">Ticker / currency / item</th>
+              <th className="py-1 pr-3 font-medium">Requested period</th>
+              <th className="py-1 pr-3 font-medium">Last available</th>
+              <th className="py-1 font-medium">Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.availability.gaps.map((g) => (
+              <tr key={g.source + g.reason} className="align-top border-t border-rose-100">
+                <td className="py-1 pr-3 whitespace-nowrap">{GAP_SOURCE[g.source]}</td>
+                <td className="py-1 pr-3">{g.item}</td>
+                <td className="py-1 pr-3 whitespace-nowrap">{g.requestedFrom ? `${fmtDate(g.requestedFrom)} → ` : ''}{fmtDate(g.requestedTo)}</td>
+                <td className="py-1 pr-3 whitespace-nowrap">{g.lastAvailableDate ? fmtDate(g.lastAvailableDate) : '—'}</td>
+                <td className="py-1">{g.reason}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
 }
 
 export function DataQualityPanel({ data }: { data: ReturnsData }) {
   const items: Record<Category, string[]> = {
-    calculation_error: [], missing_data: [], estimated_benchmark: [], officially_confirmed: [], owner_decision: [],
+    calculation_error: [], missing_data: [], estimated_benchmark: [], basis_adjustment: [], owner_reported: [], officially_confirmed: [], owner_decision: [],
   }
   const seen = new Set<string>()
   const add = (c: Category, text: string) => {
@@ -145,7 +202,7 @@ export function DataQualityPanel({ data }: { data: ReturnsData }) {
   }
   for (const p of data.periods) {
     for (const i of p.qualityIssues) add(ISSUE_CATEGORY[i.kind], i.detail)
-    if (p.twr.status !== 'ok' || p.twr.truncated) add('missing_data', `${p.label}: ${p.twr.missing[0]?.reason ?? 'data incomplete'}`)
+    if (p.twr.status !== 'ok') add('missing_data', `${p.label}: not available — ${p.twr.missing[0]?.reason ?? 'see the missing sources above'}.`)
     if (p.twr.status === 'ok' && (p.twr.residual === null || Math.abs(p.twr.residual) > CONTRIBUTION_TOLERANCE)) {
       add('calculation_error', `${p.label}: contributions do not add up to the return.`)
     }
@@ -164,12 +221,18 @@ export function DataQualityPanel({ data }: { data: ReturnsData }) {
     }
   }
   if (data.anchorSource) add('officially_confirmed', `Start values on 31 Dec: ${data.anchorSource}.`)
+  for (const p of data.valuation.positions) {
+    if (p.quality === 'estimated') add('estimated_benchmark', `${p.name} (${p.platform}): current value is the market benchmark, not the dealer’s price.`)
+    if (p.quality === 'owner_reported') add('owner_reported', `${p.name} (${p.platform}): current value read off by you (${p.note ?? 'no evidence'}).`)
+    if (p.quality === 'confirmed') add('officially_confirmed', `${p.name} (${p.platform}): current value from a recent statement (${p.note ?? ''}).`)
+  }
+  for (const n of data.dataNotes) if (/^Not applied \(owner decision/.test(n)) add('owner_decision', n)
 
-  const order: Category[] = ['calculation_error', 'missing_data', 'estimated_benchmark', 'officially_confirmed', 'owner_decision']
+  const order: Category[] = ['calculation_error', 'missing_data', 'estimated_benchmark', 'basis_adjustment', 'owner_reported', 'officially_confirmed', 'owner_decision']
   return (
     <section className="space-y-2 min-w-0">
       <h2 className="text-lg font-semibold">Data quality and sources</h2>
-      {items.calculation_error.length === 0 && (
+      {items.calculation_error.length === 0 && data.availability.ok && (
         <p className="text-sm text-emerald-700">No calculation errors: the return, the contributions and the investment result all add up ✓</p>
       )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 [&>*]:min-w-0">
