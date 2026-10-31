@@ -49,6 +49,14 @@ export type QualityIssue = {
   detail: string
 }
 
+// Explicit owner decisions that change how the reconstructed cash ledger is
+// interpreted. These are separate from real external cash flows: a cash
+// reconciliation balances an immaterial bookkeeping gap for TWR, but is never
+// presented as personal or platform-funded money.
+export type AccountingTreatment =
+  | { kind: 'storage_costs_paid_privately'; platform: string; effectiveDate: string; amountEur: null; notes: string }
+  | { kind: 'cash_reconciliation'; platform: string; effectiveDate: string; amountEur: number; notes: string }
+
 // Storage costs are charged monthly (the month after). When none is booked
 // for longer than this after the last one while metal is still held, the
 // source period may be incomplete: never treated as €0, the affected days
@@ -102,13 +110,17 @@ export function buildTwrLedger(args: {
   startDate: string
   endDate: string
   anchor?: OfficialAnchor
+  accountingTreatments?: AccountingTreatment[]
   // The app's live quote per investment (price per unit, native currency),
   // used ONLY for the end date when it is from that same day: exchange
   // closes for "today" are often not published yet, and the previous close
   // would value a purchase made today at yesterday's price.
   liveQuotes?: Map<string, { price: number; currency: string; asOf: string }>
 }): LedgerResult {
-  const { investments, transactions, flows, prices, fx, fxRates, startDate, endDate, anchor, liveQuotes } = args
+  const {
+    investments, transactions, flows, prices, fx, fxRates, startDate, endDate, anchor,
+    accountingTreatments = [], liveQuotes,
+  } = args
   const notes: string[] = []
   const invById = new Map(investments.map((i) => [i.id, i]))
   const txByInv = new Map<string, Transaction[]>()
@@ -123,7 +135,11 @@ export function buildTwrLedger(args: {
   for (const i of relevantInv) {
     sleeves[i.id] = { kind: 'position', investmentId: i.id, platform: i.platform, name: i.name, currency: i.currency ?? 'EUR' }
   }
-  const platforms = [...new Set([...relevantInv.map((i) => i.platform), ...flows.map((f) => f.platform)])].sort()
+  const platforms = [...new Set([
+    ...relevantInv.map((i) => i.platform),
+    ...flows.map((f) => f.platform),
+    ...accountingTreatments.map((t) => t.platform),
+  ])].sort()
   for (const p of platforms) sleeves[cashSleeve(p)] = { kind: 'cash', platform: p, name: `Cash ${p}` }
 
   // ---- anchor factors (official value / market value on the anchor date)
@@ -238,6 +254,22 @@ export function buildTwrLedger(args: {
     else g.out -= f.amountEur
     grossByDate.set(f.date, g)
   }
+  for (const treatment of accountingTreatments) {
+    if (treatment.kind !== 'cash_reconciliation' || treatment.effectiveDate > endDate) continue
+    const e = effectOf(treatment.effectiveDate, cashSleeve(treatment.platform))
+    e.inflow += treatment.amountEur
+    externalByDate.set(
+      treatment.effectiveDate,
+      (externalByDate.get(treatment.effectiveDate) ?? 0) + treatment.amountEur
+    )
+    const g = grossByDate.get(treatment.effectiveDate) ?? { in: 0, out: 0 }
+    g.in += treatment.amountEur
+    grossByDate.set(treatment.effectiveDate, g)
+    notes.push(
+      `Cash ${treatment.platform} reconciled by ${treatment.amountEur.toFixed(2)} EUR on ${treatment.effectiveDate}; ` +
+      'used for return calculation only, not counted as a contribution.'
+    )
+  }
   const gainOf = (e: Effect | undefined) => (e ? Object.values(e.comps).reduce((t, v) => t + (v ?? 0), 0) : 0)
 
   // ---- cash per platform, from the very first record, with the official
@@ -288,6 +320,12 @@ export function buildTwrLedger(args: {
   }
   // Last booked storage cost per platform → from when storage costs are missing.
   const storageGapFrom = new Map<string, { from: string; last: string }>()
+  const privateStorageFrom = new Map(
+    accountingTreatments
+      .filter((t): t is Extract<AccountingTreatment, { kind: 'storage_costs_paid_privately' }> =>
+        t.kind === 'storage_costs_paid_privately')
+      .map((t) => [t.platform, t.effectiveDate])
+  )
   for (const p of platforms) {
     const rows = transactions
       .filter((t) => t.type === 'fee' && /opslag|storage/i.test(t.notes ?? '') && invById.get(t.investment_id)?.platform === p)
@@ -296,6 +334,11 @@ export function buildTwrLedger(args: {
     if (rows.length < 2) continue
     const last = rows[rows.length - 1]
     const from = addDays(last, STORAGE_COST_GAP_DAYS)
+    const paidPrivatelyFrom = privateStorageFrom.get(p)
+    if (paidPrivatelyFrom && paidPrivatelyFrom <= from) {
+      notes.push(`${p}: storage costs are paid privately from ${paidPrivatelyFrom} and excluded from the portfolio.`)
+      continue
+    }
     if (from <= endDate) storageGapFrom.set(p, { from, last })
   }
   const proposedOn = new Map<string, ReturnFlow[]>()
