@@ -22,6 +22,7 @@ import { computeTwr, type TwrResult } from '@/lib/domain/twr'
 import { allTimeMoneyWeightedReturn, modifiedDietz, type MoneyWeightedReturn } from '@/lib/domain/returns'
 import { buildPositionOverview, type ClosedPositionRow, type OpenPositionRow } from '@/lib/domain/position-overview'
 import { fetchEcbFxHistory, fetchPriceHistory } from '@/lib/market/history'
+import { computeInvestmentResult, type InvestmentResult } from '@/lib/domain/investment-result'
 
 // Everything the Returns page shows, computed on the server from the
 // account's records + public market history (read-only).
@@ -51,6 +52,7 @@ export type ReturnsData = {
   sleeveNames: Record<string, string>
   anchorSource: string | null
   dataNotes: string[]
+  investmentResult: InvestmentResult | null // null while a period's return is unavailable
 }
 
 const FLOW_KINDS: FlowKind[] = ['bank_deposit', 'round_up', 'saveback', 'external_reward', 'reused_sale_proceeds', 'withdrawal']
@@ -201,6 +203,10 @@ export async function loadReturns(supabase: SupabaseClient, today: string): Prom
     all.endDate
   )
   const ytd = periods.find((p) => p.key === 'ytd')!.twr
+  const investmentResult =
+    ytd.status === 'ok' && all.status === 'ok' && ytd.endDate === all.endDate
+      ? computeInvestmentResult({ investments, transactions, flows, fxRates, periodTwr: ytd, sinceStartTwr: all })
+      : null
   return {
     endDate: today,
     periods,
@@ -213,5 +219,6 @@ export async function loadReturns(supabase: SupabaseClient, today: string): Prom
     sleeveNames,
     anchorSource: anchor ? [...new Set([...anchor.positions.map((p) => p.source), ...anchor.cash.map((c) => c.source)])].join(', ') : null,
     dataNotes,
+    investmentResult,
   }
 }

@@ -4,6 +4,7 @@ import type { ReturnsData, PeriodReturn } from '@/lib/returns/load-returns'
 import type { ReturnQuality } from '@/lib/domain/twr'
 import { CONTRIBUTION_TOLERANCE } from '@/lib/domain/twr'
 import { PERSONAL_RETURN_EXPLANATION } from '@/lib/domain/position-overview'
+import { DataQualityPanel, InvestmentResultBlock } from '@/components/returns/result-panels'
 import type { ContributionSummary } from '@/lib/domain/flow-classification'
 
 function pct(n: number | null | undefined, digits = 2): string {
@@ -154,8 +155,6 @@ export function ReturnsView({ data }: { data: ReturnsData }) {
     { label: 'Taxes withheld', value: t.byComponent.taxes },
   ]
   const ok = t.status === 'ok'
-  // Every reason for 'estimated' in any period, each listed once.
-  const issues = [...new Map(data.periods.flatMap((p) => p.qualityIssues).map((i) => [i.kind + i.detail, i])).values()]
   const matches = ok && t.residual !== null && Math.abs(t.residual) <= CONTRIBUTION_TOLERANCE
 
   return (
@@ -166,16 +165,7 @@ export function ReturnsView({ data }: { data: ReturnsData }) {
         ))}
       </section>
 
-      {issues.length > 0 && (
-        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          <p className="font-medium">Why these returns are “estimated” and not “confirmed”</p>
-          <ul className="mt-2 list-disc space-y-1 pl-5">
-            {issues.map((i) => (
-              <li key={i.kind + i.detail}>{i.detail}</li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <DataQualityPanel data={data} />
 
       <section className="grid grid-cols-1 md:grid-cols-2 gap-4 [&>*]:min-w-0">
         <div className="bg-white rounded-2xl border border-slate-200 p-5">
@@ -201,53 +191,66 @@ export function ReturnsView({ data }: { data: ReturnsData }) {
         </div>
       </section>
 
+      <InvestmentResultBlock data={data} />
+
       <section className="space-y-3 min-w-0">
         <h2 className="text-lg font-semibold">Open positions · {ytdPeriod.label}</h2>
-        <p className="text-xs text-slate-500">Scroll sideways for more columns; the instrument stays on the left.</p>
+        <p className="text-xs text-slate-500">Hover a column title for exactly what is divided by what. Scroll sideways for details; the instrument stays on the left.</p>
         <div className={scrollBox}>
           <table className="min-w-full border-separate border-spacing-0">
-            <thead className="bg-slate-50">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-wide">
+                <th className="sticky left-0 z-10 bg-slate-50" />
+                <th colSpan={2} className="bg-sky-50 px-3 pt-2 text-center font-semibold text-sky-800 border-l border-white">Return (%)</th>
+                <th colSpan={3} className="bg-emerald-50 px-3 pt-2 text-center font-semibold text-emerald-800 border-l border-white">Result (€)</th>
+                <th className="bg-violet-50 px-3 pt-2 text-center font-semibold text-violet-800 border-l border-white">Portfolio</th>
+                <th colSpan={6} className="bg-slate-50 px-3 pt-2 text-left font-semibold text-slate-500 border-l border-white">Details</th>
+              </tr>
               <tr>
                 <th className={stickyTh}>Instrument</th>
-                <th className={th} title="Price change of the instrument since 1 January, excluding dividends. For positions bought later in the year this is a market comparison only.">Market YTD</th>
-                <th className={`${th} bg-slate-100`} title={PERSONAL_RETURN_EXPLANATION}>Your return since buying</th>
-                <th className={th} title="Value change + dividends − costs of this position in the period (from the time-weighted calculation).">Profit/loss {year}</th>
-                <th className={th} title="Share of the portfolio's time-weighted return, in percentage points. All contributions add up to the total.">Contribution to return</th>
-                <th className={th}>Unrealised</th>
+                <th className={`${th} bg-sky-50`} title="(price now − price on 31 Dec) ÷ price on 31 Dec, in the instrument’s own currency, without dividends. For positions bought later in the year this is only a market comparison.">Market YTD</th>
+                <th className={`${th} bg-sky-50`} title={PERSONAL_RETURN_EXPLANATION}>Your return since buying</th>
+                <th className={`${th} bg-emerald-50`} title="Value now − remaining cost of the units you still hold (moving average, incl. buy fees). Only what you still hold.">Unrealised P/L now</th>
+                <th className={`${th} bg-emerald-50`} title={`Net proceeds of units of this position sold in ${year} − the average cost of those units. Units still held are not in here.`}>Realised P/L {year}</th>
+                <th className={`${th} bg-emerald-50`} title={`Value now − value on 31 Dec − purchases + net sale proceeds + net dividends − separate costs, in ${year}.`}>Total result {year}</th>
+                <th className={`${th} bg-violet-50`} title="Each day: this position’s result ÷ the portfolio’s invested capital, compounded with the portfolio return before that day. All contributions add up to the portfolio return.">Contribution to portfolio return</th>
                 <th className={thL}>First bought</th>
                 <th className={th}>Quantity</th>
-                <th className={th}>Price 1 Jan</th>
+                <th className={th}>Price 31 Dec</th>
                 <th className={th}>Price now</th>
-                <th className={th} title="Remaining cost of what you still hold ÷ quantity (moving average, incl. fees).">Your avg. cost</th>
+                <th className={th} title="Remaining cost of what you still hold ÷ quantity (moving average, incl. fees).">Avg. cost</th>
                 <th className={thL}>Source</th>
               </tr>
             </thead>
             <tbody>
               {data.open.map((r) => (
-                <tr key={r.investmentId} className="[&>td]:border-t [&>td]:border-slate-100">
-                  <td className={stickyTd}>
-                    <div className="font-medium text-slate-900 truncate" title={r.name}>{r.name}</div>
-                    <div className="text-xs text-slate-500">
-                      {r.platform}
-                      {r.openedInPeriod && <span className="ml-1 rounded bg-slate-100 px-1">new in {year}</span>}
-                    </div>
-                  </td>
-                  <td className={`${td} ${tone(r.marketReturn)}`} title={r.openedInPeriod ? 'Market comparison: you bought later in the year.' : undefined}>
-                    {pct(r.marketReturn)}{r.openedInPeriod ? '*' : ''}
-                  </td>
-                  <td className={`${td} bg-slate-50 font-medium ${tone(r.personalReturn)}`} title={PERSONAL_RETURN_EXPLANATION + (r.hasRebuysAfterSale ? ' Money re-bought after a sale is counted again in the purchases.' : '')}>
-                    {pct(r.personalReturn)}
-                  </td>
-                  <td className={`${td} ${tone(r.periodGainEur)}`}><PrivacyMoney value={r.periodGainEur} signed /></td>
-                  <td className={`${td} ${tone(r.contribution)}`}>{ok && r.contribution !== null ? pp(r.contribution) : '—'}</td>
-                  <td className={`${td} ${tone(r.unrealizedEur)}`}><PrivacyMoney value={r.unrealizedEur} signed /></td>
-                  <td className={tdL}>{r.firstBuyDate ? fmtDate(r.firstBuyDate) : '—'}</td>
-                  <td className={td}>{Number(r.quantity.toFixed(6))}{r.unit ? (r.unit === 'gram' ? ' g' : ' oz') : ''}</td>
-                  <td className={td}>{price(r.startPrice, r.unit)}</td>
-                  <td className={td}>{price(r.endPrice, r.unit)}</td>
-                  <td className={td}><PrivacyMoney value={r.averageCostEur} /></td>
-                  <td className={`${tdL} text-xs text-slate-500`}>{r.valueSource} · <QualityBadge quality={r.quality as ReturnQuality} /></td>
-                </tr>
+                  <tr key={r.investmentId} className="[&>td]:border-t [&>td]:border-slate-100">
+                    <td className={stickyTd}>
+                      <div className="font-medium text-slate-900 truncate" title={r.name}>{r.name}</div>
+                      <div className="text-xs text-slate-500">
+                        {r.platform}
+                        {r.openedInPeriod && <span className="ml-1 rounded bg-slate-100 px-1">new in {year}</span>}
+                      </div>
+                    </td>
+                    <td className={`${td} bg-sky-50/40 ${tone(r.marketReturn)}`} title={r.openedInPeriod ? 'Market comparison: you bought later in the year.' : undefined}>
+                      {pct(r.marketReturn)}{r.openedInPeriod ? '*' : ''}
+                    </td>
+                    <td className={`${td} bg-sky-50/40 font-medium ${tone(r.personalReturn)}`} title={PERSONAL_RETURN_EXPLANATION + (r.hasRebuysAfterSale ? ' Money re-bought after a sale is counted again in the purchases.' : '')}>
+                      {pct(r.personalReturn)}
+                    </td>
+                    <td className={`${td} ${tone(r.unrealizedEur)}`}><PrivacyMoney value={r.unrealizedEur} signed /></td>
+                    <td className={`${td} ${tone(r.realizedInPeriodEur)}`}>
+                      {Math.abs(r.realizedInPeriodEur) < 0.005 ? <span className="text-slate-400">—</span> : <PrivacyMoney value={r.realizedInPeriodEur} signed />}
+                    </td>
+                    <td className={`${td} font-medium ${tone(r.periodGainEur)}`}><PrivacyMoney value={r.periodGainEur} signed /></td>
+                    <td className={`${td} bg-violet-50/40 ${tone(r.contribution)}`}>{ok && r.contribution !== null ? pp(r.contribution) : '—'}</td>
+                    <td className={`${tdL} text-slate-500`}>{r.firstBuyDate ? fmtDate(r.firstBuyDate) : '—'}</td>
+                    <td className={`${td} text-slate-500`}>{Number(r.quantity.toFixed(6))}{r.unit ? (r.unit === 'gram' ? ' g' : ' oz') : ''}</td>
+                    <td className={`${td} text-slate-500`}>{price(r.startPrice, r.unit)}</td>
+                    <td className={`${td} text-slate-500`}>{price(r.endPrice, r.unit)}</td>
+                    <td className={`${td} text-slate-500`}><PrivacyMoney value={r.averageCostEur} /></td>
+                    <td className={`${tdL} text-xs text-slate-500`}>{r.valueSource} · <QualityBadge quality={r.quality as ReturnQuality} /></td>
+                  </tr>
               ))}
             </tbody>
           </table>
@@ -306,6 +309,9 @@ export function ReturnsView({ data }: { data: ReturnsData }) {
             </table>
           </div>
         )}
+        <p className="text-xs text-slate-500">
+          A partly sold position appears here for its sold units and in the open table for the rest; in the investment result every sale is counted once.
+        </p>
       </section>
 
       <section className="space-y-3">

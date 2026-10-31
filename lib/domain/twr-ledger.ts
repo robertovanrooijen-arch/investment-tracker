@@ -26,16 +26,19 @@ import type { GainComponent, SleeveDay, SleeveStart, TwrDay, TwrInput, ValueQual
 //    'reconstructed', without one 'estimated'.
 //  * cash: reconstructed from the records, day by day; on the anchor date
 //    the confirmed statement balance replaces it (the gap is reported).
-//    Negative cash means purchases without recorded funding (a missing
-//    deposit). Inside this boundary that only shifts the LEVEL (cash −X,
-//    position +X: no gain appears), but it understates the invested capital.
-//    A small shortfall (≤ max(€25, 1% of the portfolio)) is accepted as
+//    A negative balance that recovers within the normal settlement window is
+//    treated as booking order, not as missing money. A persistent negative
+//    balance means purchases without recorded funding (a missing deposit).
+//    Inside this boundary that only shifts the LEVEL (cash −X, position +X:
+//    no gain appears), but it understates the invested capital. A small
+//    persistent shortfall (≤ max(€25, 1% of the portfolio)) is accepted as
 //    'estimated'; a larger one makes that day's cash unknown — no percentage.
 // ---------------------------------------------------------------------------
 
 export const CASH_NEGATIVE_TOLERANCE_EUR = 1
 export const CASH_SHORTFALL_ABS_EUR = 25
 export const CASH_SHORTFALL_FRACTION = 0.01
+export const CASH_SETTLEMENT_WINDOW_DAYS = 3
 
 export type OfficialAnchor = {
   date: string
@@ -343,6 +346,14 @@ export function buildTwrLedger(args: {
   }
   const proposedOn = new Map<string, ReturnFlow[]>()
   for (const f of flows) if (f.proposed) proposedOn.set(`${f.date}|${f.platform}`, [...(proposedOn.get(`${f.date}|${f.platform}`) ?? []), f])
+  const isTransientCashShortfall = (platform: string, date: string) => {
+    for (let n = 1; n <= CASH_SETTLEMENT_WINDOW_DAYS; n += 1) {
+      const futureDate = addDays(date, n)
+      if (futureDate > endDate) break
+      if ((cashValues[platform].get(futureDate) ?? 0) >= -CASH_NEGATIVE_TOLERANCE_EUR) return true
+    }
+    return false
+  }
   for (let d = addDays(startDate, 1); d <= endDate; d = addDays(d, 1)) {
     const dayEffects = effects.get(d)
     const sl: SleeveDay[] = []
@@ -375,13 +386,16 @@ export function buildTwrLedger(args: {
     // Unfunded purchases (negative cash): material or not?
     const positionsTotal = sl.reduce((t, s) => t + (s.valueEur ?? 0), 0)
     const cashToday = platforms.map((p) => cashValues[p].get(d) ?? 0)
-    const shortfall = cashToday.reduce((t, v) => t + (v < -CASH_NEGATIVE_TOLERANCE_EUR ? -v : 0), 0)
+    const persistentNegative = platforms.map((p, idx) =>
+      cashToday[idx] < -CASH_NEGATIVE_TOLERANCE_EUR && !isTransientCashShortfall(p, d)
+    )
+    const shortfall = cashToday.reduce((t, v, idx) => t + (persistentNegative[idx] ? -v : 0), 0)
     const total = positionsTotal + cashToday.reduce((t, v) => t + v, 0)
     const material = shortfall > Math.max(CASH_SHORTFALL_ABS_EUR, CASH_SHORTFALL_FRACTION * Math.abs(total))
     platforms.forEach((p, idx) => {
       const e = dayEffects?.get(cashSleeve(p))
       const v = cashToday[idx]
-      const negative = v < -CASH_NEGATIVE_TOLERANCE_EUR
+      const negative = persistentNegative[idx]
       if (negative && !shortfallNoted.has(p)) {
         shortfallNoted.add(p)
         notes.push(`Cash ${p} is ${v.toFixed(2)} EUR on ${d}: purchases without recorded funding${material ? ' (material: cash unknown)' : ' (small: estimated)'}.`)
