@@ -2,7 +2,13 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Investment, Transaction } from '@/types/database'
 import { computeTwr, linkReturns, CONTRIBUTION_TOLERANCE } from '@/lib/domain/twr'
-import { buildTwrLedger, addDays, cashSleeve, type OfficialAnchor } from '@/lib/domain/twr-ledger'
+import {
+  buildTwrLedger,
+  addDays,
+  cashSleeve,
+  type AccountingTreatment,
+  type OfficialAnchor,
+} from '@/lib/domain/twr-ledger'
 import { summarizeContributions, type FlowKind, type ReturnFlow } from '@/lib/domain/flow-classification'
 import { buildPositionOverview } from '@/lib/domain/position-overview'
 import { modifiedDietz } from '@/lib/domain/returns'
@@ -59,6 +65,7 @@ function run(args: {
   start: string
   end: string
   anchor?: OfficialAnchor
+  accountingTreatments?: AccountingTreatment[]
   fx?: FxSeries
   allowTruncation?: boolean
 }) {
@@ -66,6 +73,7 @@ function run(args: {
   const ledger = buildTwrLedger({
     investments: args.investments, transactions: args.transactions, flows: args.flows, prices, fx: args.fx ?? {},
     fxRates: { EUR: 1 }, startDate: args.start, endDate: args.end, anchor: args.anchor,
+    accountingTreatments: args.accountingTreatments,
   })
   const twr = computeTwr(ledger.input, { allowTruncation: args.allowTruncation })
   const overview = buildPositionOverview({
@@ -389,5 +397,48 @@ describe('TWR engine', () => {
     const ok = run({ investments: [g], transactions: booked, flows: [flow('2025-10-01', 1010, 'bank_deposit', 'GoldRepublic')], prices: [xau], start: '2025-12-31', end: '2026-03-31', anchor })
     assert.deepEqual(ok.ledger.qualityIssues, [])
     assert.equal(ok.twr.quality, 'reconstructed')
+  })
+
+  test('owner-approved private storage costs do not make the tracked portfolio incomplete', () => {
+    const g = inv({ id: 'g-private', name: 'Goud', platform: 'GoldRepublic', type: 'commodity', ticker: 'XAU', commodity_kind: 'gold', quantity_unit: 'gram' })
+    const storage = (date: string) => tx({ investment_id: g.id, type: 'fee', date, amount: 1, notes: 'Bevestigde opslagkosten' })
+    const txs = [buy(g.id, '2025-10-01', 10, 100), storage('2025-11-15'), storage('2025-12-15')]
+    const xau = series('XAU', { '2025-09-20': 100 }, '2025-09-20', '2026-03-31', { unit: 'gram' })
+    const anchor: OfficialAnchor = { date: '2025-12-31', positions: [{ investmentId: g.id, valueEur: 1000, quantity: 10, source: 'statement' }], cash: [] }
+    const result = run({
+      investments: [g], transactions: txs, flows: [flow('2025-10-01', 1002, 'bank_deposit', 'GoldRepublic')],
+      prices: [xau], start: '2025-12-31', end: '2026-03-31', anchor,
+      accountingTreatments: [{
+        kind: 'storage_costs_paid_privately', platform: 'GoldRepublic', effectiveDate: '2026-01-01',
+        amountEur: null, notes: 'Paid from the owner private bank account.',
+      }],
+    })
+    assert.ok(!result.ledger.qualityIssues.some((i) => i.kind === 'storage_costs_missing'))
+    assert.equal(result.twr.quality, 'reconstructed')
+  })
+
+  test('cash reconciliation sets a small broker cash deficit to zero without becoming a contribution', () => {
+    const a = inv({ id: 'cash-reconciliation', platform: 'DEGIRO' })
+    const connectionFee = tx({
+      investment_id: a.id, type: 'fee', date: '2026-02-23', amount: 2.5,
+      notes: 'DEGIRO Aansluitingskosten 2026',
+    })
+    const anchor: OfficialAnchor = {
+      date: '2026-02-22', positions: [],
+      cash: [{ platform: 'DEGIRO', amountEur: 0.08, source: 'test statement' }],
+    }
+    const result = run({
+      investments: [a], transactions: [connectionFee], flows: [], prices: [],
+      start: '2026-02-22', end: '2026-02-23', anchor,
+      accountingTreatments: [{
+        kind: 'cash_reconciliation', platform: 'DEGIRO', effectiveDate: '2026-02-23',
+        amountEur: 2.42, notes: 'Owner-approved rounding reconciliation.',
+      }],
+    })
+    close(result.ledger.cashByPlatform.DEGIRO.at(-1)?.valueEur, 0)
+    assert.ok(!result.ledger.qualityIssues.some((i) => i.kind === 'cash_shortfall'))
+    assert.equal(summarizeContributions([]).grossFreshContributionsEur, 0)
+    assert.equal(result.twr.externalInEur, 2.42)
+    assert.equal(result.twr.reconciled, true)
   })
 })

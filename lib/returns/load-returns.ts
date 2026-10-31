@@ -11,7 +11,13 @@ import {
   type ContributionSummary,
   type FlowKind,
 } from '@/lib/domain/flow-classification'
-import { addDays, buildTwrLedger, type OfficialAnchor, type QualityIssue } from '@/lib/domain/twr-ledger'
+import {
+  addDays,
+  buildTwrLedger,
+  type AccountingTreatment,
+  type OfficialAnchor,
+  type QualityIssue,
+} from '@/lib/domain/twr-ledger'
 import { computeTwr, type TwrResult } from '@/lib/domain/twr'
 import { allTimeMoneyWeightedReturn, modifiedDietz, type MoneyWeightedReturn } from '@/lib/domain/returns'
 import { buildPositionOverview, type ClosedPositionRow, type OpenPositionRow } from '@/lib/domain/position-overview'
@@ -59,12 +65,20 @@ type OfficialBalanceRow = {
   source_document: string
 }
 
+type AccountingTreatmentRow = {
+  platform: string
+  treatment: AccountingTreatment['kind']
+  effective_date: string
+  amount_eur: number | string | null
+  notes: string
+}
+
 export async function loadReturns(supabase: SupabaseClient, today: string): Promise<ReturnsData> {
   const year = Number(today.slice(0, 4))
   const yearEnd = `${year - 1}-12-31`
   const dataNotes: string[] = []
 
-  const [invRes, txRes, flowRes, fxRes, officialRes] = await Promise.all([
+  const [invRes, txRes, flowRes, fxRes, officialRes, treatmentRes] = await Promise.all([
     fetchAllInvestments(supabase),
     fetchAllTransactions(supabase),
     fetchAllRows<CapitalFlowEntry & { flow_kind?: string | null }>((from, to) =>
@@ -74,6 +88,8 @@ export async function loadReturns(supabase: SupabaseClient, today: string): Prom
     loadFxRates(supabase),
     // Exists only after the official-balances migration; any error → no anchor.
     supabase.from('official_balances').select('*').eq('statement_date', yearEnd).returns<OfficialBalanceRow[]>(),
+    supabase.from('portfolio_accounting_treatments').select('*').order('effective_date', { ascending: true })
+      .returns<AccountingTreatmentRow[]>(),
   ])
   if (invRes.error || txRes.error || flowRes.error) {
     throw new Error('Could not load your investments, transactions or cash flows.')
@@ -82,6 +98,31 @@ export async function loadReturns(supabase: SupabaseClient, today: string): Prom
   const transactions = txRes.data ?? []
   const capitalFlows = flowRes.data ?? []
   const fxRates = fxRes.rates
+  const accountingTreatments: AccountingTreatment[] = treatmentRes.error
+    ? []
+    : (treatmentRes.data ?? []).map((row): AccountingTreatment | null => {
+        if (row.treatment === 'storage_costs_paid_privately') {
+          return {
+            kind: row.treatment,
+            platform: row.platform,
+            effectiveDate: row.effective_date,
+            amountEur: null,
+            notes: row.notes,
+          }
+        }
+        const amountEur = Number(row.amount_eur)
+        if (!Number.isFinite(amountEur) || amountEur <= 0) return null
+        return {
+          kind: row.treatment,
+          platform: row.platform,
+          effectiveDate: row.effective_date,
+          amountEur,
+          notes: row.notes,
+        }
+      }).filter((row): row is AccountingTreatment => row !== null)
+  if (treatmentRes.error) {
+    dataNotes.push('Accounting treatments could not be loaded; no owner-approved reconciliations were applied.')
+  }
 
   let anchor: OfficialAnchor | undefined
   if (!officialRes.error && officialRes.data?.length) {
@@ -133,7 +174,10 @@ export async function loadReturns(supabase: SupabaseClient, today: string): Prom
   let sleeveNames: Record<string, string> = {}
   for (const def of defs) {
     const start = def.start < inception ? inception : def.start
-    const ledger = buildTwrLedger({ investments, transactions, flows, prices, fx, fxRates, startDate: start, endDate: today, anchor, liveQuotes })
+    const ledger = buildTwrLedger({
+      investments, transactions, flows, prices, fx, fxRates, startDate: start, endDate: today,
+      anchor, accountingTreatments, liveQuotes,
+    })
     const twr = computeTwr(ledger.input, { allowTruncation: true })
     let estimate: number | null = null
     if (twr.status !== 'ok' && twr.startValueEur !== null) {
