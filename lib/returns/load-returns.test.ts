@@ -55,6 +55,13 @@ function account(over: { investments?: Row[]; treatments?: Row[]; extraFlows?: R
 const writes: { table: string; payload: unknown }[] = []
 function fakeSupabase(tables: Record<string, Row[]>): SupabaseClient {
   return {
+    rpc: (_name: string, args: { p_portfolio: Row; p_positions: Row[] }) => ({
+      then: (resolve: (r: unknown) => void) => {
+        writes.push({ table: 'portfolio_snapshots', payload: args.p_portfolio })
+        if (args.p_positions.length) writes.push({ table: 'investment_snapshots', payload: args.p_positions })
+        resolve({ data: { portfolio: args.p_portfolio, position_count: args.p_positions.length }, error: null })
+      },
+    }),
     from: (table: string) => {
       const filters: [string, unknown][] = []
       let range: [number, number] | null = null

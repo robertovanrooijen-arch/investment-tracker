@@ -102,7 +102,22 @@ function fakeSupabase(tables: Record<string, unknown[]>, failing: Record<string,
     }
     return q
   }
-  return { client: { from: builder } as unknown as SupabaseClient, ops }
+  const rpc = (_name: string, args: { p_portfolio: unknown; p_positions: unknown[] }) => ({
+    then: (resolve: (v: unknown) => void) => {
+      if (failing.write_central_snapshots_atomic) {
+        return resolve({ data: null, error: { message: failing.write_central_snapshots_atomic } })
+      }
+      ops.push({ table: 'portfolio_snapshots', kind: 'upsert', payload: args.p_portfolio })
+      if (args.p_positions.length) {
+        ops.push({ table: 'investment_snapshots', kind: 'upsert', payload: args.p_positions })
+      }
+      resolve({
+        data: { portfolio: args.p_portfolio, position_count: args.p_positions.length },
+        error: null,
+      })
+    },
+  })
+  return { client: { from: builder, rpc } as unknown as SupabaseClient, ops }
 }
 
 const realFetch = globalThis.fetch
@@ -218,6 +233,22 @@ describe('refreshPortfolioForUser — prices and snapshots', () => {
     assert.equal(res.snapshot, null)
     assert.ok(res.snapshotError)
     assert.equal(ops.length, 0)
+  })
+
+  test('an atomic RPC failure leaves both snapshot tables untouched', async () => {
+    const { client, ops } = fakeSupabase({}, { write_central_snapshots_atomic: 'position write rejected' })
+    const valuation = {
+      asOf: '2026-10-31', status: 'ok' as const, totalEur: 0, positionsEur: 0, cashEur: 0, ledgerTotalEur: 0,
+      costOfOpenPositionsEur: 0, positions: [], cash: [], quality: 'confirmed' as const, oldestPriceAsOf: null,
+      brokerCash: { presentation: 'separate' as const, roundingToleranceEur: 0.1, totalEur: 0, byPlatform: [], policyDecisionNeeded: false },
+      gaps: [],
+    }
+    const res = await writeCentralSnapshots(client, { investments: [], transactions: [], fxRates: { EUR: 1 }, valuation }, {
+      userId: 'u1', source: 'cron', today: '2026-10-31', now: '2026-10-31T10:00:00Z', writeQuality: true,
+    })
+    assert.equal(res.quality, 'incomplete')
+    assert.match(res.snapshotError ?? '', /Atomic snapshot write failed/)
+    assert.equal(ops.length, 0, 'the database function is all-or-nothing')
   })
 
   test('a failed read of transactions throws; it never becomes an empty portfolio with a €0 snapshot', async () => {

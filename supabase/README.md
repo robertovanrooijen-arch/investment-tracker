@@ -15,6 +15,10 @@ small temporary fee overdraft and current cash is only a rounding residue;
 cash stays in the audit ledger and outside the headline value. The
 owner-reported GoldRepublic silver observation for 2026-10-31 is stored in
 `broker_value_observations`.
+M16 and M17 were applied on 2026-11-01. M16 writes portfolio and position
+snapshots in one database transaction. M17 provides the service-role-only,
+atomic and idempotent apply step for broker CSV trade imports. Applying these
+two migrations did not alter any existing portfolio data.
 `manual/m8_u1_tr_contributions.sql` has not been run.
 
 | Folder | What | When |

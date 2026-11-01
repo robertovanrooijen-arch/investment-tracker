@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
-import { fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
+import { fetchAllInvestments, fetchAllTransactions } from '@/lib/supabase/fetch-user-data'
 import { PageHeader } from '@/components/ui/page-header'
 import { Badge } from '@/components/ui/badge'
 import { ClickableTr } from '@/components/ui/clickable-tr'
@@ -23,13 +23,28 @@ type TxRow = Transaction & {
 export default async function TransactionsPage() {
   const supabase = await createClient()
 
-  const [{ data: transactions, error }, fxRes] = await Promise.all([
-    fetchAllTransactions<TxRow>(supabase, '*, investment:investments(name, ticker, type, currency)', {
+  const [txRes, investmentRes, fxRes] = await Promise.all([
+    fetchAllTransactions<Transaction>(supabase, '*', {
       order: 'date_desc',
     }),
+    fetchAllInvestments(supabase),
     loadFxRates(supabase),
   ])
 
+  const error = txRes.error ?? investmentRes.error
+  const byId = new Map((investmentRes.data ?? []).map((investment) => [investment.id, investment]))
+  const transactions: TxRow[] = (txRes.data ?? []).map((transaction) => {
+    const investment = byId.get(transaction.investment_id)
+    return {
+      ...transaction,
+      investment: investment ? {
+        name: investment.name,
+        ticker: investment.ticker,
+        type: investment.type,
+        currency: investment.currency,
+      } : null,
+    }
+  })
   const fxRates = fxRes.rates
 
   return (
@@ -38,12 +53,23 @@ export default async function TransactionsPage() {
         title="Transactions"
         subtitle="Every buy, sell, deposit, withdrawal, and value update."
         action={
-          <Link
-            href="/transactions/new"
-            className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
-          >
-            + Add transaction
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link href="/imports" className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+              Import CSV
+            </Link>
+            <Link
+              href="/data-quality"
+              className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Data checks
+            </Link>
+            <Link
+              href="/transactions/new"
+              className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+            >
+              + Add transaction
+            </Link>
+          </div>
         }
       />
 

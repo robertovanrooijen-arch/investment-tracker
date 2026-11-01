@@ -16,17 +16,10 @@ import { allocationSlices } from '@/lib/domain/current-valuation'
 import { loadFxRates } from '@/lib/domain/fx'
 import { normalizePlatformName } from '@/lib/domain/constants'
 import { todayLocalIso, computeDailyChange, type DailyChange } from '@/lib/domain/snapshot'
-import type { Transaction, InvestmentType, CapitalFlowEntry } from '@/types/database'
+import type { CapitalFlowEntry } from '@/types/database'
 import { fetchAllRows } from '@/lib/supabase/fetch-all-rows'
 import { loadReturns } from '@/lib/returns/load-returns'
-
-type TxWithInvestment = Transaction & {
-  investment: {
-    name: string
-    ticker: string | null
-    type: InvestmentType
-  } | null
-}
+import { buildRecentTransactions } from '@/lib/dashboard/recent-transactions'
 
 function dailyChangeText(change: DailyChange): string {
   if (!change) return 'No previous day value'
@@ -56,16 +49,9 @@ export default async function DashboardPage() {
 
   const todayIso = todayLocalIso()
 
-  const [invRes, txRes, recentRes, fxRes, latestSnapRes, flowRes, returnsData] = await Promise.all([
+  const [invRes, txRes, fxRes, latestSnapRes, flowRes, returnsData] = await Promise.all([
     fetchAllInvestments(supabase),
     fetchAllTransactions(supabase),
-    supabase
-      .from('transactions')
-      .select('*, investment:investments(name, ticker, type)')
-      .order('date', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(5)
-      .returns<TxWithInvestment[]>(),
     loadFxRates(supabase),
     supabase
       .from('portfolio_snapshots')
@@ -81,7 +67,7 @@ export default async function DashboardPage() {
 
   const investments = invRes.data ?? []
   const transactions = txRes.data ?? []
-  const recent = recentRes.data ?? []
+  const recent = buildRecentTransactions(transactions, investments)
   const fxRates = fxRes.rates
   const latestSnap = latestSnapRes.data as { updated_at: string } | null
   const lastRefreshedAt = latestSnap?.updated_at ?? null

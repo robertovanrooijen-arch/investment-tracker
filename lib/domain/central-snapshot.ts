@@ -140,28 +140,23 @@ export async function writeCentralSnapshots(
       quality: rows.fxRelated ? 'fx_incomplete' : 'incomplete', valuationQuality: null,
     }
   }
-  const { data, error } = await supabase
-    .from('portfolio_snapshots')
-    .upsert(rows.portfolio, { onConflict: 'user_id,date' })
-    .select('date, total_value_eur, total_invested_eur, total_realized_eur, total_unrealized_eur, total_ever_invested_eur, snapshot_source, updated_at')
-    .single()
+  const { data, error } = await supabase.rpc('write_central_snapshots_atomic', {
+    p_portfolio: rows.portfolio,
+    p_positions: rows.positions,
+  })
   if (error) {
     return {
-      snapshot: null, snapshotError: error.message, investmentSnapshots: { upserted: 0, error: null },
+      snapshot: null,
+      snapshotError: `Atomic snapshot write failed: ${error.message}`,
+      investmentSnapshots: { upserted: 0, error: error.message },
       quality: 'incomplete', valuationQuality: rows.quality,
     }
   }
-  let upserted = 0
-  let positionsError: string | null = null
-  if (rows.positions.length) {
-    const res = await supabase.from('investment_snapshots').upsert(rows.positions, { onConflict: 'user_id,investment_id,date' })
-    if (res.error) positionsError = res.error.message
-    else upserted = rows.positions.length
-  }
+  const written = data as { portfolio?: SnapshotRow; position_count?: number } | null
   return {
-    snapshot: (data as SnapshotRow) ?? rows.portfolio,
+    snapshot: written?.portfolio ?? rows.portfolio,
     snapshotError: null,
-    investmentSnapshots: { upserted, error: positionsError },
+    investmentSnapshots: { upserted: written?.position_count ?? rows.positions.length, error: null },
     quality: 'complete',
     valuationQuality: rows.quality,
   }
