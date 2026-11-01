@@ -184,7 +184,6 @@ export function buildPortfolioAllocation(
 }
 
 const VALUE_STATUS: Partial<Record<NonNullable<CurrentPosition['quality']>, string>> = {
-  estimated: 'market benchmark (estimated)',
   owner_reported: 'owner-reported',
   confirmed: 'statement value',
 }

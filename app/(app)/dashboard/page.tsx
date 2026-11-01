@@ -104,8 +104,6 @@ export default async function DashboardPage() {
     totalResult === null ? 'neutral' : totalResult > 0 ? 'positive' : totalResult < 0 ? 'negative' : 'neutral'
 
   const isEmpty = investments.length === 0
-  const benchmarkPositions = valuation.positions.filter((p) => p.quality === 'estimated' || p.quality === 'owner_reported')
-
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -154,9 +152,6 @@ export default async function DashboardPage() {
                 ) : (
                   <>
                     <BrokerCashNote cash={h.brokerCash} />
-                    {benchmarkPositions.length > 0 && (
-                      <> · {benchmarkPositions.map((p) => p.name).join(', ')}: {benchmarkPositions.some((p) => p.quality === 'estimated') ? 'market benchmark (estimated)' : 'owner-reported'}</>
-                    )}
                     <br />
                     <span className={dailyChangeClass(dailyChange)}>
                       <PrivacyValue

@@ -348,9 +348,7 @@ export default async function HistoryPage() {
           <span className="font-medium text-slate-700">Last market close:</span>{' '}
           {returnsData.lastMarketCloseDate ? fmtDate(returnsData.lastMarketCloseDate) : '—'} ·{' '}
           <span className="font-medium text-slate-700">oldest current price:</span>{' '}
-          {valuation.oldestPriceAsOf ? fmtDate(valuation.oldestPriceAsOf.slice(0, 10)) : '—'} ·{' '}
-          <span className="font-medium text-slate-700">quality:</span>{' '}
-          {historyComplete ? (valuation.quality === 'estimated' ? 'estimated (metals on a market benchmark)' : valuation.quality ?? '—') : 'incomplete'}
+          {valuation.oldestPriceAsOf ? fmtDate(valuation.oldestPriceAsOf.slice(0, 10)) : '—'}
         </p>
         {!historyComplete && (
           <p className="text-rose-700">

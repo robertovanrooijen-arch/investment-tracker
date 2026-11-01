@@ -228,7 +228,9 @@ export function DataQualityPanel({ data }: { data: ReturnsData }) {
   }
   for (const n of data.dataNotes) if (/^Not applied \(owner decision/.test(n)) add('owner_decision', n)
 
-  const order: Category[] = ['calculation_error', 'missing_data', 'estimated_benchmark', 'basis_adjustment', 'owner_reported', 'officially_confirmed', 'owner_decision']
+  // Benchmark valuation is an accepted standing choice for this account. It
+  // remains in the engine/audit data, but is not an actionable UI warning.
+  const order: Category[] = ['calculation_error', 'missing_data', 'basis_adjustment', 'owner_reported', 'officially_confirmed', 'owner_decision']
   return (
     <section className="space-y-2 min-w-0">
       <h2 className="text-lg font-semibold">Data quality and sources</h2>

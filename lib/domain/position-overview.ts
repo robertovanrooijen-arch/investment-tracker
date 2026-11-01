@@ -190,7 +190,7 @@ export function buildPositionOverview(args: {
       contribution: sleeve?.contribution ?? null,
       ownTwr: sleeve?.ownReturn ?? null,
       valueSource: metal
-        ? anchored.has(inv.id) ? 'Statement value + COMEX movement (benchmark)' : 'COMEX benchmark only (estimate)'
+        ? anchored.has(inv.id) ? 'Dealer value + market movement' : 'Market price'
         : anchored.has(inv.id) ? 'Statement value + Yahoo closes' : 'Yahoo closes',
       quality: metal && !anchored.has(inv.id) ? 'estimated' : 'reconstructed',
     })

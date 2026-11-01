@@ -28,6 +28,10 @@ const QUALITY_TEXT: Record<ReturnQuality, { label: string; cls: string; help: st
 }
 
 export function QualityBadge({ quality }: { quality: ReturnQuality }) {
+  // Market-based metal valuations are an accepted account choice. Keep the
+  // provenance internally, but do not repeat a non-actionable "estimated"
+  // label throughout the personal dashboard.
+  if (quality === 'estimated') return null
   const q = QUALITY_TEXT[quality]
   return (
     <span title={q.help} className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${q.cls}`}>
@@ -244,7 +248,10 @@ export function ReturnsView({ data }: { data: ReturnsData }) {
                     <td className={`${td} text-slate-500`}>{price(r.startPrice, r.unit)}</td>
                     <td className={`${td} text-slate-500`}>{price(r.endPrice, r.unit)}</td>
                     <td className={`${td} text-slate-500`}><PrivacyMoney value={r.averageCostEur} /></td>
-                    <td className={`${tdL} text-xs text-slate-500`}>{r.valueSource} · <QualityBadge quality={r.quality as ReturnQuality} /></td>
+                    <td className={`${tdL} text-xs text-slate-500`}>
+                      {r.valueSource}
+                      {r.quality !== 'estimated' && <> · <QualityBadge quality={r.quality as ReturnQuality} /></>}
+                    </td>
                   </tr>
               ))}
             </tbody>
