@@ -19,15 +19,17 @@ export async function POST() {
     return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 })
   }
 
-  // Refresh FX once for this run, then this user's portfolio. fx_rates is
-  // global data: it is written only by trusted server code (service role),
-  // never with the signed-in user's session — so the pending migration can
-  // revoke user write access without breaking this route.
-  const fxResult = await refreshFxRatesGlobal(createAdminClient())
+  // Refresh FX once for this run, then this user's portfolio. Authentication
+  // is checked with the user's cookie-backed client above.
+  // All writes then use a separate privileged server client. In particular,
+  // the atomic snapshot RPC is intentionally executable only by service_role;
+  // passing the SSR user client here would fail with "permission denied".
+  const admin = createAdminClient()
+  const fxResult = await refreshFxRatesGlobal(admin)
 
   let result
   try {
-    result = await refreshPortfolioForUser(supabase, user.id, 'manual_refresh')
+    result = await refreshPortfolioForUser(admin, user.id, 'manual_refresh')
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Refresh failed.' },
